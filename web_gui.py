@@ -61,6 +61,11 @@ DEFAULT_CONFIG = {
     "save_raw_json":         True,
     "request_delay":         1.0,
     "log_level":             "INFO",
+    "follow_new_threads":    True,
+    "follow_near_bump_limit": True,
+    "follow_cross_board":    False,
+    "follow_tag_auto_added": True,
+    "follow_keywords":       ["new thread", "new bread", "bake", "baked"],
 }
 
 # ── Config I/O ────────────────────────────────────────────────────────────────
@@ -132,6 +137,36 @@ def _clean_html(text: str) -> str:
     text = re.sub(r"<[^>]+>", "", text)
     return html_lib.unescape(text).strip()
 
+_CROSSTHREAD_RE = re.compile(
+    r'href="//boards\.4chan(?:nel)?\.org/([a-z0-9]+)/thread/(\d+)',
+    re.IGNORECASE,
+)
+
+def _find_successor_threads(new_posts: list, src_board: str, cfg: dict) -> list:
+    """Return deduplicated [(board, thread_no), ...] for posts that contain
+    both a follow-keyword and a cross-thread link. Returns [] if disabled."""
+    if not cfg.get("follow_new_threads", True):
+        return []
+    keywords = [kw.lower() for kw in cfg.get("follow_keywords", []) if kw.strip()]
+    if not keywords:
+        return []
+    allow_cross = cfg.get("follow_cross_board", False)
+    found = {}
+    for post in new_posts:
+        raw_html = post.get("com") or ""
+        links = _CROSSTHREAD_RE.findall(raw_html)
+        if not links:
+            continue
+        plain = _clean_html(raw_html).lower()
+        if not any(kw in plain for kw in keywords):
+            continue
+        for board, thread_no_str in links:
+            board = board.lower()
+            if not allow_cross and board != src_board:
+                continue
+            found[(board, int(thread_no_str))] = True
+    return list(found.keys())
+
 def _slugify(text: str, maxlen: int = 60) -> str:
     text = re.sub(r"[^\w\s-]", "", text or "")
     text = re.sub(r"[\s_-]+", "_", text).strip("_")
@@ -156,8 +191,12 @@ def _format_post(post: dict) -> str:
     lines.append("")
     return "\n".join(lines)
 
-def scrape_thread_entry(t: dict, cfg: dict) -> dict:
-    """Fetch and archive one thread. Returns updated thread dict."""
+def scrape_thread_entry(t: dict, cfg: dict) -> tuple:
+    """Fetch and archive one thread. Returns (updated_thread_dict, discovered_list).
+
+    discovered_list is [(board, thread_no), ...] of successor threads found via
+    follow-keywords. Empty list when the feature is disabled or no matches found.
+    """
     board     = t["board"]
     thread_no = t["thread_no"]
     delay     = cfg.get("request_delay", 1.0)
@@ -166,11 +205,11 @@ def scrape_thread_entry(t: dict, cfg: dict) -> dict:
     data = _api_get(f"{API_BASE}/{board}/thread/{thread_no}.json")
     if data is None:
         t["status"] = "404"
-        return t
+        return t, []
 
     posts = data.get("posts", [])
     if not posts:
-        return t
+        return t, []
 
     op    = posts[0]
     title = _clean_html(op.get("sub") or "")
@@ -186,6 +225,7 @@ def scrape_thread_entry(t: dict, cfg: dict) -> dict:
     last_seen = t.get("last_seen_post", 0)
     new_posts = [p for p in posts if p["no"] > last_seen]
 
+    discovered = []
     if new_posts:
         # Raw JSON
         if cfg.get("save_raw_json", True):
@@ -229,6 +269,10 @@ def scrape_thread_entry(t: dict, cfg: dict) -> dict:
 
         t["last_seen_post"] = posts[-1]["no"]
 
+        near_bump = cfg.get("follow_near_bump_limit", True)
+        if not near_bump or len(posts) >= 300:
+            discovered = _find_successor_threads(new_posts, board, cfg)
+
     # Update stats
     t["title"]        = title or t.get("title") or f"Thread {thread_no}"
     t["post_count"]   = len(posts)
@@ -240,7 +284,7 @@ def scrape_thread_entry(t: dict, cfg: dict) -> dict:
         len([f for f in img_dir.iterdir() if f.is_file()])
         if img_dir.exists() else 0
     )
-    return t
+    return t, discovered
 
 # ── Scheduler / background runner ─────────────────────────────────────────────
 
@@ -259,14 +303,16 @@ def run_all_threads():
         with _threads_lock:
             threads = load_threads()
 
-        updated = []
+        updated        = []
+        all_discovered = []
         for t in threads:
             if t.get("status") == "404":
                 updated.append(t)
                 continue
             log.info("  /%s/ thread %d", t["board"], t["thread_no"])
             try:
-                t = scrape_thread_entry(t, cfg)
+                t, discovered = scrape_thread_entry(t, cfg)
+                all_discovered.extend(discovered)
             except Exception as exc:
                 log.error("  Error: %s", exc, exc_info=True)
             updated.append(t)
@@ -274,6 +320,12 @@ def run_all_threads():
 
         with _threads_lock:
             save_threads(updated)
+
+        for board, thread_no in all_discovered:
+            try:
+                _auto_add_thread(board, thread_no, cfg)
+            except Exception as exc:
+                log.error("Auto-follow error /%s/%d: %s", board, thread_no, exc)
 
         interval = cfg.get("interval_minutes", 30)
         _run_state["next_run_ts"] = (
@@ -283,6 +335,48 @@ def run_all_threads():
     finally:
         _run_state["running"] = False
         _run_lock.release()
+
+def _auto_add_thread(board: str, thread_no: int, cfg: dict):
+    """Add a discovered successor thread to the monitored list if not already present.
+    Must NOT be called while holding _threads_lock — acquires the lock itself.
+    """
+    tid = f"{board}_{thread_no}"
+    with _threads_lock:
+        ts = load_threads()
+        if any(t["id"] == tid for t in ts):
+            log.debug("Auto-follow skip (already monitored): %s", tid)
+            return
+        new_t = {
+            "id":             tid,
+            "board":          board,
+            "thread_no":      thread_no,
+            "url":            f"https://boards.4chan.org/{board}/thread/{thread_no}",
+            "title":          f"Thread {thread_no}",
+            "post_count":     0,
+            "image_count":    0,
+            "last_scraped":   None,
+            "last_seen_post": 0,
+            "status":         "pending",
+            "added_at":       datetime.utcnow().isoformat() + "Z",
+        }
+        if cfg.get("follow_tag_auto_added", True):
+            new_t["auto_added"] = True
+        ts.append(new_t)
+        save_threads(ts)
+        log.info("Auto-followed new thread: /%s/ %d", board, thread_no)
+
+    def _initial_scrape():
+        c = load_cfg()
+        with _threads_lock:
+            current = load_threads()
+        idx = next((i for i, t in enumerate(current) if t["id"] == tid), None)
+        if idx is not None:
+            current[idx], _ = scrape_thread_entry(current[idx], c)
+            with _threads_lock:
+                save_threads(current)
+
+    threading.Thread(target=_initial_scrape, daemon=True,
+                     name=f"auto-scrape-{tid}").start()
 
 def start_scheduler(interval: int):
     _run_state["next_run_ts"] = (
@@ -353,7 +447,7 @@ def api_add_thread():
             ts = load_threads()
         idx = next((i for i, t in enumerate(ts) if t["id"] == tid), None)
         if idx is not None:
-            ts[idx] = scrape_thread_entry(ts[idx], cfg)
+            ts[idx], _ = scrape_thread_entry(ts[idx], cfg)
             with _threads_lock:
                 save_threads(ts)
 
@@ -380,7 +474,7 @@ def api_scrape_one(tid: str):
             ts = load_threads()
         idx = next((i for i, t in enumerate(ts) if t["id"] == tid), None)
         if idx is not None:
-            ts[idx] = scrape_thread_entry(ts[idx], cfg)
+            ts[idx], _ = scrape_thread_entry(ts[idx], cfg)
             with _threads_lock:
                 save_threads(ts)
 
@@ -404,8 +498,12 @@ def api_get_config():
 def api_set_config():
     data = request.get_json(silent=True) or {}
     cfg  = load_cfg()
-    allowed = ("interval_minutes", "save_images", "max_images_per_thread",
-               "save_raw_json", "request_delay", "output_dir")
+    allowed = (
+        "interval_minutes", "save_images", "max_images_per_thread",
+        "save_raw_json", "request_delay", "output_dir",
+        "follow_new_threads", "follow_near_bump_limit", "follow_cross_board",
+        "follow_tag_auto_added", "follow_keywords",
+    )
     for key in allowed:
         if key in data:
             cfg[key] = data[key]
@@ -1044,6 +1142,8 @@ details[open] > summary::before { transform: rotate(90deg); }
   animation: spin .55s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+.auto-tag { color: var(--orange); font-size: .72rem; cursor: default;
+            flex-shrink: 0; user-select: none; }
 </style>
 </head>
 <body>
@@ -1127,6 +1227,40 @@ details[open] > summary::before { transform: rotate(90deg); }
           <label for="cfg-json">Save raw JSON</label>
         </div>
       </div>
+      <details style="margin-top:1rem">
+        <summary>Thread Following</summary>
+        <div class="settings-grid" style="margin-top:.85rem">
+          <div class="setting checkbox-row">
+            <input type="checkbox" id="cfg-follow-enabled" checked>
+            <label for="cfg-follow-enabled">Enable thread following</label>
+          </div>
+          <div class="setting checkbox-row">
+            <input type="checkbox" id="cfg-follow-bump" checked>
+            <label for="cfg-follow-bump">Only near bump limit (&#8805;300 posts)</label>
+          </div>
+          <div class="setting checkbox-row">
+            <input type="checkbox" id="cfg-follow-cross">
+            <label for="cfg-follow-cross">Allow cross-board links</label>
+          </div>
+          <div class="setting checkbox-row">
+            <input type="checkbox" id="cfg-follow-tag" checked>
+            <label for="cfg-follow-tag">Tag auto-added threads</label>
+          </div>
+          <div class="setting" style="grid-column:1/-1">
+            <label>Keywords (one per line)</label>
+            <textarea id="cfg-follow-keywords" rows="4"
+              style="width:100%;background:var(--surface2);border:1px solid var(--border);
+                     border-radius:5px;color:var(--text);padding:.32rem .6rem;
+                     font-size:.875rem;font-family:inherit;resize:vertical;
+                     transition:border-color .15s;outline:none"
+              onfocus="this.style.borderColor='var(--accent)'"
+              onblur="this.style.borderColor='var(--border)'">new thread
+new bread
+bake
+baked</textarea>
+          </div>
+        </div>
+      </details>
       <div class="settings-footer">
         <button class="btn" onclick="saveConfig()">Save Settings</button>
         <span class="save-ok" id="save-ok">&#10003; Saved</span>
@@ -1198,6 +1332,12 @@ async function loadConfig() {
     document.getElementById('cfg-output').value    = cfg.output_dir ?? '4chan_archive';
     document.getElementById('cfg-images').checked  = cfg.save_images !== false;
     document.getElementById('cfg-json').checked    = cfg.save_raw_json !== false;
+    document.getElementById('cfg-follow-enabled').checked = cfg.follow_new_threads !== false;
+    document.getElementById('cfg-follow-bump').checked    = cfg.follow_near_bump_limit !== false;
+    document.getElementById('cfg-follow-cross').checked   = cfg.follow_cross_board === true;
+    document.getElementById('cfg-follow-tag').checked     = cfg.follow_tag_auto_added !== false;
+    const kws = Array.isArray(cfg.follow_keywords) ? cfg.follow_keywords : [];
+    document.getElementById('cfg-follow-keywords').value  = kws.join('\\n');
   } catch (_) {}
 }
 
@@ -1225,6 +1365,7 @@ function renderTable() {
       <td class="col-title">
         <div class="title-cell">
           <a class="title-link" href="/archive/${esc(t.board)}/${esc(t.thread_no)}" target="_blank" title="${ttl}">${ttl}</a>
+          ${t.auto_added ? '<span class="auto-tag" title="Auto-followed">&#x2935;</span>' : ''}
           <a class="live-btn" href="${esc(t.url)}" target="_blank" rel="noopener" title="Open live thread on 4chan">4chan &#8599;</a>
         </div>
       </td>
@@ -1344,13 +1485,20 @@ async function runAll() {
 }
 
 async function saveConfig() {
+  const rawKws   = document.getElementById('cfg-follow-keywords').value;
+  const keywords = rawKws.split('\\n').map(s => s.trim()).filter(s => s.length > 0);
   const cfg = {
-    interval_minutes:      parseInt(document.getElementById('cfg-interval').value) || 30,
-    max_images_per_thread: parseInt(document.getElementById('cfg-max-img').value)  || 0,
-    request_delay:         parseFloat(document.getElementById('cfg-delay').value)  || 1,
-    output_dir:            document.getElementById('cfg-output').value || '4chan_archive',
-    save_images:           document.getElementById('cfg-images').checked,
-    save_raw_json:         document.getElementById('cfg-json').checked,
+    interval_minutes:       parseInt(document.getElementById('cfg-interval').value) || 30,
+    max_images_per_thread:  parseInt(document.getElementById('cfg-max-img').value)  || 0,
+    request_delay:          parseFloat(document.getElementById('cfg-delay').value)  || 1,
+    output_dir:             document.getElementById('cfg-output').value || '4chan_archive',
+    save_images:            document.getElementById('cfg-images').checked,
+    save_raw_json:          document.getElementById('cfg-json').checked,
+    follow_new_threads:     document.getElementById('cfg-follow-enabled').checked,
+    follow_near_bump_limit: document.getElementById('cfg-follow-bump').checked,
+    follow_cross_board:     document.getElementById('cfg-follow-cross').checked,
+    follow_tag_auto_added:  document.getElementById('cfg-follow-tag').checked,
+    follow_keywords:        keywords,
   };
   try {
     const r = await fetch('/api/config', {
