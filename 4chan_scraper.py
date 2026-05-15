@@ -79,7 +79,7 @@ DEFAULT_CONFIG = {
 API_BASE = "https://a.4cdn.org"
 IMG_BASE = "https://i.4cdn.org"
 HEADERS  = {
-    "User-Agent": "4chan-archiver/1.0 (educational; contact via config)",
+    "User-Agent": "4scrape/1.0 (educational; contact via config)",
     "Accept":     "application/json",
 }
 

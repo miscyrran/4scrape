@@ -13,7 +13,7 @@
 services:
   archiver:
     image: ghcr.io/miscyrran/4scrape:latest
-    container_name: 4chan-archiver
+    container_name: 4scrape
 
     # ── Port mapping ───────────────────────────────────────────────────────────
     # Change the left-hand number to expose on a different host port.

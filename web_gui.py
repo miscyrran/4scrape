@@ -44,7 +44,7 @@ log = logging.getLogger("4chan_gui")
 
 API_BASE     = "https://a.4cdn.org"
 IMG_BASE     = "https://i.4cdn.org"
-HTTP_HEADERS = {"User-Agent": "4chan-archiver/1.0", "Accept": "application/json"}
+HTTP_HEADERS = {"User-Agent": "4scrape/1.0", "Accept": "application/json"}
 
 # Paths — override with environment variables so the Docker volume
 # (/data) becomes the single location for all persistent state.

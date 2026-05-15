@@ -7,14 +7,14 @@
 # container restarts.
 #
 # Build:
-#   docker build -t 4chan-archiver .
+#   docker build -t 4scrape .
 #
 # Run (with a bind mount so files are accessible on the host):
 #   docker run -d \
 #     -p 5000:5000 \
 #     -v "$(pwd)/data:/data" \
 #     --name archiver \
-#     4chan-archiver
+#     4scrape
 # ──────────────────────────────────────────────────────────────────────────────
 
 FROM python:3.11-slim
