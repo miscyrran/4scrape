@@ -1,0 +1,33 @@
+# Scraped archives and runtime data — keep these local, not in the repo
+data/
+4chan_archive/
+
+# Config and state files with local paths
+config.json
+monitored_threads.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Docker
+.docker/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
