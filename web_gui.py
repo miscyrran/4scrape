@@ -566,7 +566,7 @@ main{{max-width:860px;margin:0 auto;padding:1.4rem 1.2rem}}
 .post-img img{{max-width:min(100%,400px);max-height:320px;
                 object-fit:contain;border-radius:5px;
                 border:1px solid var(--border);cursor:pointer}}
-.post-img img:hover{{max-width:100%;max-height:none}}
+.post-img img.expanded{{max-width:100%;max-height:none}}
 .post-img video{{max-width:min(100%,560px);max-height:400px;
                   border-radius:5px;border:1px solid var(--border);
                   display:block;background:#000}}
@@ -596,6 +596,11 @@ main{{max-width:860px;margin:0 auto;padding:1.4rem 1.2rem}}
   </div>
   {body}
 </main>
+<script>
+document.querySelectorAll('.post-img img').forEach(img => {{
+  img.addEventListener('click', () => img.classList.toggle('expanded'));
+}});
+</script>
 </body>
 </html>"""
     return page, 200, {"Content-Type": "text/html; charset=utf-8"}
