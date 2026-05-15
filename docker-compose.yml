@@ -12,8 +12,7 @@
 
 services:
   archiver:
-    build: .
-    image: 4chan-archiver
+    image: ghcr.io/miscyrran/4scrape:latest
     container_name: 4chan-archiver
 
     # ── Port mapping ───────────────────────────────────────────────────────────
