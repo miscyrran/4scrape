@@ -1,0 +1,79 @@
+# 4chan Archiver — Docker Compose
+#
+# Quick start:
+#   docker compose up -d
+#   open http://localhost:5000
+#
+# Archived content is written to ./data/ on the host machine.
+# You can open that folder at any time — it is live while the container runs.
+#
+# To change the scrape interval or other defaults without editing this file,
+# use the Settings panel inside the web GUI.
+
+services:
+  archiver:
+    build: .
+    image: 4chan-archiver
+    container_name: 4chan-archiver
+
+    # ── Port mapping ───────────────────────────────────────────────────────────
+    # Change the left-hand number to expose on a different host port.
+    # e.g. "8080:5000" makes the GUI available at http://localhost:8080
+    ports:
+      - "5000:5000"
+
+    # ── Persistent storage ─────────────────────────────────────────────────────
+    # ./data on the host maps to /data inside the container.
+    # Sub-directories created automatically on first run:
+    #   ./data/archive/   — scraped boards / threads / images
+    #   ./data/config.json
+    #   ./data/monitored_threads.json
+    volumes:
+      - ./data:/data
+
+    # ── Environment overrides ──────────────────────────────────────────────────
+    # These match the ENV defaults in the Dockerfile; uncomment to override.
+    environment:
+      CONFIG_PATH:  /data/config.json
+      THREADS_PATH: /data/monitored_threads.json
+      ARCHIVE_DIR:  /data/archive
+      HOST:         0.0.0.0
+      PORT:         5000
+      # TZ: America/New_York   # uncomment to set container timezone
+
+    # ── Restart policy ────────────────────────────────────────────────────────
+    restart: unless-stopped
+
+    # ── Resource limits (optional, uncomment to enable) ───────────────────────
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: "1.0"
+    #       memory: 512M
+
+    # ── Health check (mirrors Dockerfile HEALTHCHECK) ─────────────────────────
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:5000/"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+    # ── Logging ───────────────────────────────────────────────────────────────
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# ── Named-volume alternative ───────────────────────────────────────────────────
+# To use a Docker-managed named volume instead of a bind mount, comment out
+# the bind-mount above and replace it with:
+#
+#     volumes:
+#       - archive_data:/data
+#
+# Then uncomment this block:
+#
+# volumes:
+#   archive_data:
