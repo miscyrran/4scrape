@@ -451,10 +451,13 @@ def archive_view(board: str, thread_no: int):
             trip = html_lib.escape(p.get("trip") or "")
             ts   = datetime.utcfromtimestamp(p.get("time", 0)).strftime("%Y-%m-%d %H:%M:%S UTC")
             sub  = html_lib.unescape(re.sub(r"<[^>]+>", "", p.get("sub") or ""))
-            com  = p.get("com") or ""
-            com  = re.sub(r"<br\s*/?>", "\n", com, flags=re.IGNORECASE)
-            com  = re.sub(r"<[^>]+>", "", com)
-            com  = html_lib.unescape(com).strip()
+            com = p.get("com") or ""
+            # Preserve quotelinks before stripping all other tags
+            com = re.sub(r'<a[^>]*class="quotelink"[^>]*>&gt;&gt;(\d+)</a>',
+                         '\x00QL\\1\x00', com)
+            com = re.sub(r"<br\s*/?>", "\n", com, flags=re.IGNORECASE)
+            com = re.sub(r"<[^>]+>", "", com)
+            com = html_lib.unescape(com).strip()
 
             img_html = ""
             if p.get("tim") and p.get("ext") and thread_dir:
@@ -480,7 +483,14 @@ def archive_view(board: str, thread_no: int):
                         )
 
             sub_html = f'<div class="post-sub">{html_lib.escape(sub)}</div>' if sub else ""
-            com_html = f'<pre class="post-body">{html_lib.escape(com)}</pre>' if com else ""
+            if com:
+                com_safe = html_lib.escape(com)
+                com_safe = re.sub(r'\x00QL(\d+)\x00',
+                                  r'<a href="#p\1" class="quotelink">&gt;&gt;\1</a>',
+                                  com_safe)
+                com_html = f'<pre class="post-body">{com_safe}</pre>'
+            else:
+                com_html = ""
             return (
                 f'<div class="post" id="p{no}">'
                 f'<div class="post-hdr">'
@@ -563,6 +573,8 @@ main{{max-width:860px;margin:0 auto;padding:1.4rem 1.2rem}}
 .raw-txt{{white-space:pre-wrap;word-break:break-word;font-family:'Courier New',monospace;
            font-size:.8rem;background:var(--surface);border:1px solid var(--border);
            border-radius:8px;padding:1rem}}
+.quotelink{{color:var(--blue);text-decoration:none}}
+.quotelink:hover{{text-decoration:underline}}
 .not-found{{text-align:center;padding:4rem 1rem;color:var(--muted)}}
 .not-found h2{{color:var(--text);margin-bottom:.75rem}}
 .not-found a{{color:var(--blue)}}
