@@ -2,6 +2,8 @@
 
 A self-hosted 4chan thread archiver with a web GUI. Monitors threads on a schedule, saves post text, images, and video files, and provides a local archive viewer.
 
+This is slopcoded mostly to experiment; don't be surprised if any issues are ignored.
+
 ## Requirements
 
 - Docker and Docker Compose
