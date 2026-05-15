@@ -66,6 +66,8 @@ DEFAULT_CONFIG = {
     "follow_cross_board":    False,
     "follow_tag_auto_added": True,
     "follow_keywords":       ["new thread", "new bread", "bake", "baked"],
+    "auto_archive_on_404":          True,
+    "auto_archive_on_4chan_archive": True,
 }
 
 # ── Config I/O ────────────────────────────────────────────────────────────────
@@ -205,6 +207,8 @@ def scrape_thread_entry(t: dict, cfg: dict) -> tuple:
     data = _api_get(f"{API_BASE}/{board}/thread/{thread_no}.json")
     if data is None:
         t["status"] = "404"
+        if cfg.get("auto_archive_on_404", True):
+            t["user_archived"] = True
         return t, []
 
     posts = data.get("posts", [])
@@ -278,6 +282,8 @@ def scrape_thread_entry(t: dict, cfg: dict) -> tuple:
     t["post_count"]   = len(posts)
     t["last_scraped"] = datetime.utcnow().isoformat() + "Z"
     t["status"]       = "archived" if op.get("archived") else "active"
+    if t["status"] == "archived" and cfg.get("auto_archive_on_4chan_archive", True):
+        t["user_archived"] = True
 
     img_dir = thread_dir / "images"
     t["image_count"] = (
@@ -306,7 +312,7 @@ def run_all_threads():
         updated        = []
         all_discovered = []
         for t in threads:
-            if t.get("status") == "404":
+            if t.get("status") == "404" or t.get("user_archived"):
                 updated.append(t)
                 continue
             log.info("  /%s/ thread %d", t["board"], t["thread_no"])
@@ -465,6 +471,19 @@ def api_remove_thread(tid: str):
         save_threads(threads)
     return jsonify({"ok": True})
 
+@app.route("/api/threads/<tid>", methods=["PATCH"])
+def api_update_thread(tid: str):
+    data = request.get_json(silent=True) or {}
+    with _threads_lock:
+        threads = load_threads()
+        idx = next((i for i, t in enumerate(threads) if t["id"] == tid), None)
+        if idx is None:
+            return jsonify({"error": "Thread not found"}), 404
+        if "user_archived" in data:
+            threads[idx]["user_archived"] = bool(data["user_archived"])
+        save_threads(threads)
+    return jsonify(threads[idx])
+
 @app.route("/api/threads/<tid>/scrape", methods=["POST"])
 def api_scrape_one(tid: str):
     cfg = load_cfg()
@@ -503,6 +522,7 @@ def api_set_config():
         "save_raw_json", "request_delay", "output_dir",
         "follow_new_threads", "follow_near_bump_limit", "follow_cross_board",
         "follow_tag_auto_added", "follow_keywords",
+        "auto_archive_on_404", "auto_archive_on_4chan_archive",
     )
     for key in allowed:
         if key in data:
@@ -1144,6 +1164,12 @@ details[open] > summary::before { transform: rotate(90deg); }
 @keyframes spin { to { transform: rotate(360deg); } }
 .auto-tag { color: var(--orange); font-size: .72rem; cursor: default;
             flex-shrink: 0; user-select: none; }
+.archive-summary {{ display: flex; align-items: center; gap: .65rem;
+                    cursor: pointer; list-style: none; padding: .1rem 0; }}
+.archive-summary::before {{ content: "▸"; transition: transform .2s;
+                             display: inline-block; color: var(--muted); }}
+details[open] > .archive-summary::before {{ transform: rotate(90deg); }}
+.archive-summary .card-title {{ margin-bottom: 0; }}
 </style>
 </head>
 <body>
@@ -1195,6 +1221,17 @@ details[open] > summary::before { transform: rotate(90deg); }
       </div>
     </div>
     <div id="thread-list"></div>
+  </div>
+
+  <!-- Archived Threads -->
+  <div class="card">
+    <details id="archive-details">
+      <summary class="archive-summary">
+        <div class="card-title">Archived Threads</div>
+        <span class="count-badge" id="archive-count-badge">0</span>
+      </summary>
+      <div id="archive-list" style="margin-top:.9rem"></div>
+    </details>
   </div>
 
   <!-- Settings -->
@@ -1258,6 +1295,19 @@ details[open] > summary::before { transform: rotate(90deg); }
 new bread
 bake
 baked</textarea>
+          </div>
+        </div>
+      </details>
+      <details style="margin-top:1rem">
+        <summary>Auto-archive</summary>
+        <div class="settings-grid" style="margin-top:.85rem">
+          <div class="setting checkbox-row">
+            <input type="checkbox" id="cfg-autoarchive-404" checked>
+            <label for="cfg-autoarchive-404">Auto-archive when thread 404s</label>
+          </div>
+          <div class="setting checkbox-row">
+            <input type="checkbox" id="cfg-autoarchive-4chan" checked>
+            <label for="cfg-autoarchive-4chan">Auto-archive when 4chan archives the thread</label>
           </div>
         </div>
       </details>
@@ -1338,64 +1388,74 @@ async function loadConfig() {
     document.getElementById('cfg-follow-tag').checked     = cfg.follow_tag_auto_added !== false;
     const kws = Array.isArray(cfg.follow_keywords) ? cfg.follow_keywords : [];
     document.getElementById('cfg-follow-keywords').value  = kws.join('\\n');
+    document.getElementById('cfg-autoarchive-404').checked  = cfg.auto_archive_on_404 !== false;
+    document.getElementById('cfg-autoarchive-4chan').checked = cfg.auto_archive_on_4chan_archive !== false;
   } catch (_) {}
 }
 
 // ── Render table ───────────────────────────────────────────────────────────────
-function renderTable() {
-  document.getElementById('count-badge').textContent = threads.length;
-  const el = document.getElementById('thread-list');
+function makeTable(rows) {
+  return `<div class="t-wrap">
+    <table class="thread-table">
+      <thead><tr>
+        <th>Title</th><th>Board</th><th>Posts</th>
+        <th>Images</th><th>Last Run</th><th>Status</th><th></th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`;
+}
 
-  if (!threads.length) {
+function makeRow(t, isArchived) {
+  const sc   = 's-' + (t.status || 'pending');
+  const slbl = {active:'Active', archived:'Archived', '404':'404 Gone', pending:'Pending'}[t.status] || t.status;
+  const last = t.last_scraped ? timeAgo(new Date(t.last_scraped)) : '—';
+  const ttl  = esc(t.title || 'Thread ' + t.thread_no);
+  const actions = isArchived
+    ? `<button class="btn-icon" title="Unarchive" onclick="unarchiveThread('${esc(t.id)}')">&#x21A9;</button>
+       <button class="btn-icon danger" title="Remove" onclick="removeThread('${esc(t.id)}')">&#x2715;</button>`
+    : `<button class="btn-icon" title="Archive" onclick="archiveThread('${esc(t.id)}')">&#x229F;</button>
+       <button class="btn-icon" title="Scrape now" onclick="scrapeOne('${esc(t.id)}')">&#x21BB;</button>
+       <button class="btn-icon danger" title="Remove" onclick="removeThread('${esc(t.id)}')">&#x2715;</button>`;
+  return `<tr>
+      <td class="col-title"><div class="title-cell">
+        <a class="title-link" href="/archive/${esc(t.board)}/${esc(t.thread_no)}" target="_blank" title="${ttl}">${ttl}</a>
+        ${t.auto_added ? '<span class="auto-tag" title="Auto-followed">&#x2935;</span>' : ''}
+        <a class="live-btn" href="${esc(t.url)}" target="_blank" rel="noopener" title="Open on 4chan">4chan &#8599;</a>
+      </div></td>
+      <td><span class="board-tag">/${esc(t.board)}/</span></td>
+      <td class="num">${t.post_count ?? 0}</td>
+      <td class="num">${t.image_count ?? 0}</td>
+      <td class="time-text">${last}</td>
+      <td><div class="status-cell ${sc}"><span class="dot"></span>${slbl}</div></td>
+      <td class="actions-cell">${actions}</td>
+    </tr>`;
+}
+
+function renderTable() {
+  const active   = threads.filter(t => !t.user_archived);
+  const archived = threads.filter(t =>  t.user_archived);
+
+  document.getElementById('count-badge').textContent         = active.length;
+  document.getElementById('archive-count-badge').textContent = archived.length;
+
+  const el = document.getElementById('thread-list');
+  if (!active.length) {
     el.innerHTML = `
       <div class="empty">
         <div class="empty-icon">&#128065;</div>
         <h3>No threads yet</h3>
         <p>Add a 4chan thread URL above to start monitoring it.</p>
       </div>`;
-    return;
+  } else {
+    el.innerHTML = makeTable(active.map(t => makeRow(t, false)).join(''));
   }
 
-  const rows = threads.map(t => {
-    const sc   = 's-' + (t.status || 'pending');
-    const slbl = {active:'Active', archived:'Archived', '404':'404 Gone', pending:'Pending'}[t.status] || t.status;
-    const last = t.last_scraped ? timeAgo(new Date(t.last_scraped)) : '—';
-    const ttl  = esc(t.title || 'Thread ' + t.thread_no);
-    return `<tr>
-      <td class="col-title">
-        <div class="title-cell">
-          <a class="title-link" href="/archive/${esc(t.board)}/${esc(t.thread_no)}" target="_blank" title="${ttl}">${ttl}</a>
-          ${t.auto_added ? '<span class="auto-tag" title="Auto-followed">&#x2935;</span>' : ''}
-          <a class="live-btn" href="${esc(t.url)}" target="_blank" rel="noopener" title="Open live thread on 4chan">4chan &#8599;</a>
-        </div>
-      </td>
-      <td><span class="board-tag">/${esc(t.board)}/</span></td>
-      <td class="num">${t.post_count ?? 0}</td>
-      <td class="num">${t.image_count ?? 0}</td>
-      <td class="time-text">${last}</td>
-      <td><div class="status-cell ${sc}"><span class="dot"></span>${slbl}</div></td>
-      <td class="actions-cell">
-        <button class="btn-icon" title="Scrape now" onclick="scrapeOne('${esc(t.id)}')">↻</button>
-        <button class="btn-icon danger" title="Remove" onclick="removeThread('${esc(t.id)}')">✕</button>
-      </td>
-    </tr>`;
-  }).join('');
-
-  el.innerHTML = `
-    <div class="t-wrap">
-    <table class="thread-table">
-      <thead><tr>
-        <th>Title</th>
-        <th>Board</th>
-        <th>Posts</th>
-        <th>Images</th>
-        <th>Last Run</th>
-        <th>Status</th>
-        <th></th>
-      </tr></thead>
-      <tbody>${rows}</tbody>
-    </table>
-    </div>`;
+  const al = document.getElementById('archive-list');
+  if (!archived.length) {
+    al.innerHTML = '<div class="empty" style="padding:1.5rem 1rem"><p>No archived threads yet.</p></div>';
+  } else {
+    al.innerHTML = makeTable(archived.map(t => makeRow(t, true)).join(''));
+  }
 }
 
 // ── Actions ────────────────────────────────────────────────────────────────
@@ -1462,6 +1522,30 @@ async function removeThread(id) {
   } catch (_) { toast('Network error', 'error'); }
 }
 
+async function archiveThread(id) {
+  try {
+    const r = await fetch('/api/threads/' + encodeURIComponent(id), {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({user_archived: true})
+    });
+    if (r.ok) { await fetchThreads(); }
+    else { toast('Could not archive thread', 'error'); }
+  } catch (_) { toast('Network error', 'error'); }
+}
+
+async function unarchiveThread(id) {
+  try {
+    const r = await fetch('/api/threads/' + encodeURIComponent(id), {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({user_archived: false})
+    });
+    if (r.ok) { await fetchThreads(); }
+    else { toast('Could not unarchive thread', 'error'); }
+  } catch (_) { toast('Network error', 'error'); }
+}
+
 async function scrapeOne(id) {
   try {
     const r = await fetch('/api/threads/' + encodeURIComponent(id) + '/scrape', {method: 'POST'});
@@ -1499,6 +1583,8 @@ async function saveConfig() {
     follow_cross_board:     document.getElementById('cfg-follow-cross').checked,
     follow_tag_auto_added:  document.getElementById('cfg-follow-tag').checked,
     follow_keywords:        keywords,
+    auto_archive_on_404:          document.getElementById('cfg-autoarchive-404').checked,
+    auto_archive_on_4chan_archive: document.getElementById('cfg-autoarchive-4chan').checked,
   };
   try {
     const r = await fetch('/api/config', {
