@@ -140,7 +140,7 @@ def _clean_html(text: str) -> str:
     return html_lib.unescape(text).strip()
 
 _CROSSTHREAD_RE = re.compile(
-    r'href="//boards\.4chan(?:nel)?\.org/([a-z0-9]+)/thread/(\d+)',
+    r'href="(?:(?:https?:)?//boards\.4chan(?:nel)?\.org)?/([a-z0-9]+)/thread/(\d+)',
     re.IGNORECASE,
 )
 
