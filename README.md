@@ -18,6 +18,12 @@ Then open http://localhost:5000.
 
 Archived content is written to `./data/` on your machine. This folder is live while the container runs and persists across restarts.
 
+To pull the latest image after an update:
+
+```bash
+docker compose pull && docker compose up -d
+```
+
 ## Usage
 
 1. Paste or drag a 4chan thread URL into the input box and press Enter (or click Add Thread).
@@ -28,9 +34,31 @@ Supported URL formats:
 - `https://boards.4chan.org/{board}/thread/{id}`
 - `https://boards.4channel.org/{board}/thread/{id}`
 
+## Archive viewer
+
+- `>>quotelinks` are rendered as links that jump to the quoted post within the page.
+- Images are shown as thumbnails and expand to full size on click.
+- Video files (.webm, .mp4) play inline.
+
+## Thread list
+
+### Archived Threads
+
+Threads can be moved to a collapsible **Archived Threads** section at any time using the ⊟ button on each row. Archived threads are no longer scraped. Use the ↩ button to move a thread back to the monitored list.
+
+Threads can also be archived automatically — see the Auto-archive settings below.
+
+### Thread following
+
+When a thread is nearing its bump limit, users typically post a "new thread" link pointing to the successor thread. 4scrape can detect these posts and automatically add the linked thread to the monitored list.
+
+Threads added this way are tagged with a ⤵ icon in the thread list.
+
 ## Configuration
 
-Settings are available in the collapsible panel at the bottom of the GUI. Key options:
+Settings are available in the collapsible panel at the bottom of the GUI.
+
+### General
 
 | Setting | Default | Description |
 |---|---|---|
@@ -40,6 +68,23 @@ Settings are available in the collapsible panel at the bottom of the GUI. Key op
 | Output directory | `4chan_archive` | Where archives are written inside the container |
 | Download images | on | Save full-size images and video files |
 | Save raw JSON | on | Keep the raw API response alongside the plain-text archive |
+
+### Thread Following
+
+| Setting | Default | Description |
+|---|---|---|
+| Enable thread following | on | Scan new posts for successor thread links |
+| Only near bump limit | on | Only scan threads with 300 or more posts |
+| Allow cross-board links | off | Follow links that point to a different board |
+| Tag auto-added threads | on | Show the ⤵ icon on automatically followed threads |
+| Keywords | `new thread`, `new bread`, `bake`, `baked` | A post must contain one of these words alongside a cross-thread link to trigger following |
+
+### Auto-archive
+
+| Setting | Default | Description |
+|---|---|---|
+| Auto-archive when thread 404s | on | Move dead threads to the Archived section automatically |
+| Auto-archive when 4chan archives the thread | on | Move threads to the Archived section when 4chan marks them read-only |
 
 Config is stored in `./data/config.json` and persists across restarts.
 
@@ -83,5 +128,5 @@ python 4chan_scraper.py --run-once   # single pass, then exit
 ## Notes
 
 - 4chan's API asks for no more than one request per second and one catalog request per ten seconds. The scraper enforces these automatically.
-- Threads marked 404 are kept in the list but not re-scraped.
-- Video files (.webm, .mp4) are downloaded and play inline in the archive viewer.
+- Threads marked 404 are kept in the list (in the Archived section if auto-archive is on) but not re-scraped.
+- The Docker image is built and pushed to `ghcr.io/miscyrran/4scrape:latest` automatically on every push to main.
