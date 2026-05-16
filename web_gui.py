@@ -534,6 +534,52 @@ def api_set_config():
     start_scheduler(interval)
     return jsonify(cfg)
 
+@app.route("/api/debug/follow/<board>/<int:thread_no>")
+def api_debug_follow(board: str, thread_no: int):
+    """Diagnostic: fetch a thread and report what thread-following would detect.
+    Ignores last_seen_post and bump-limit — checks every post."""
+    cfg      = load_cfg()
+    keywords = [kw.lower() for kw in cfg.get("follow_keywords", []) if kw.strip()]
+    allow_cross = cfg.get("follow_cross_board", False)
+
+    data = _api_get(f"{API_BASE}/{board}/thread/{thread_no}.json")
+    if data is None:
+        return jsonify({"error": "Thread not found or 404"}), 404
+
+    posts = data.get("posts", [])
+    results = []
+    for p in posts:
+        raw = p.get("com") or ""
+        links  = _CROSSTHREAD_RE.findall(raw)
+        plain  = _clean_html(raw).lower()
+        kw_hits = [kw for kw in keywords if kw in plain]
+        filtered_links = [
+            {"board": b.lower(), "thread_no": int(n)}
+            for b, n in links
+            if allow_cross or b.lower() == board
+        ]
+        would_follow = bool(kw_hits and filtered_links)
+        if kw_hits or links:
+            results.append({
+                "post_no":       p["no"],
+                "keywords_found": kw_hits,
+                "links_found":   [{"board": b, "thread_no": int(n)} for b, n in links],
+                "links_allowed": filtered_links,
+                "would_follow":  would_follow,
+                "raw_html":      raw,
+            })
+
+    return jsonify({
+        "board":           board,
+        "thread_no":       thread_no,
+        "total_posts":     len(posts),
+        "posts_with_hits": len(results),
+        "follow_enabled":  cfg.get("follow_new_threads", True),
+        "keywords":        keywords,
+        "allow_cross_board": allow_cross,
+        "results":         results,
+    })
+
 @app.route("/api/run", methods=["POST"])
 def api_run_now():
     if _run_state["running"]:
