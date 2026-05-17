@@ -403,6 +403,18 @@ def start_scheduler(interval: int):
 app = Flask(__name__)
 app.json.sort_keys = False
 
+_FAVICON_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+    '<rect width="32" height="32" rx="5" fill="#131316"/>'
+    '<text x="16" y="25" font-family="system-ui,-apple-system,sans-serif" '
+    'font-size="23" font-weight="900" fill="#c93535" text-anchor="middle">4</text>'
+    '</svg>'
+)
+
+@app.route("/favicon.svg")
+def favicon():
+    return _FAVICON_SVG, 200, {"Content-Type": "image/svg+xml"}
+
 @app.route("/")
 def index():
     return HTML_TEMPLATE, 200, {"Content-Type": "text/html; charset=utf-8"}
@@ -686,6 +698,7 @@ def archive_view(board: str, thread_no: int):
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <title>{html_lib.escape(title)} — 4scrape archive</title>
 <style>
 *,*::before,*::after{{box-sizing:border-box;margin:0;padding:0}}
@@ -797,6 +810,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <title>4scrape</title>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
