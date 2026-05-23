@@ -621,6 +621,15 @@ def archive_view(board: str, thread_no: int):
         op    = posts[0] if posts else {}
         title = html_lib.unescape(re.sub(r"<[^>]+>", "", op.get("sub") or "")) or f"Thread {thread_no}"
 
+        # Build reverse-quote map: target_no -> [list of post nos that quote it]
+        backlinks: dict = {}
+        for p in posts:
+            for m in re.finditer(
+                r'<a[^>]*class="quotelink"[^>]*>&gt;&gt;(\d+)</a>',
+                p.get("com") or "",
+            ):
+                backlinks.setdefault(int(m.group(1)), []).append(p["no"])
+
         def render_post(p):
             no   = p.get("no", "?")
             name = html_lib.escape(p.get("name") or "Anonymous")
@@ -659,6 +668,14 @@ def archive_view(board: str, thread_no: int):
                         )
 
             sub_html = f'<div class="post-sub">{html_lib.escape(sub)}</div>' if sub else ""
+            refs = backlinks.get(no, [])
+            if refs:
+                ref_links = " ".join(
+                    f'<a href="#p{r}" class="backlink">&gt;&gt;{r}</a>' for r in refs
+                )
+                backlinks_html = f'<div class="post-backlinks">{ref_links}</div>'
+            else:
+                backlinks_html = ""
             if com:
                 com_safe = html_lib.escape(com)
                 com_safe = re.sub(r'\x00QL(\d+)\x00',
@@ -674,6 +691,7 @@ def archive_view(board: str, thread_no: int):
                 f'<span class="post-no">#{no}</span>'
                 f'<span class="post-ts">{ts}</span>'
                 f'</div>'
+                f'{backlinks_html}'
                 f'{sub_html}{img_html}{com_html}'
                 f'</div>'
             )
@@ -752,6 +770,9 @@ main{{max-width:860px;margin:0 auto;padding:1.4rem 1.2rem}}
            border-radius:8px;padding:1rem}}
 .quotelink{{color:var(--blue);text-decoration:none}}
 .quotelink:hover{{text-decoration:underline}}
+.post-backlinks{{font-size:.75rem;margin-bottom:.4rem;color:var(--muted)}}
+.backlink{{color:var(--muted);text-decoration:none;margin-right:.35rem}}
+.backlink:hover{{color:var(--blue);text-decoration:underline}}
 .not-found{{text-align:center;padding:4rem 1rem;color:var(--muted)}}
 .not-found h2{{color:var(--text);margin-bottom:.75rem}}
 .not-found a{{color:var(--blue)}}
