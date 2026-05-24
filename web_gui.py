@@ -1245,12 +1245,31 @@ details[open] > summary::before { transform: rotate(90deg); }
 @keyframes spin { to { transform: rotate(360deg); } }
 .auto-tag { color: var(--orange); font-size: .72rem; cursor: default;
             flex-shrink: 0; user-select: none; }
-.archive-summary {{ display: flex; align-items: center; gap: .65rem;
-                    cursor: pointer; list-style: none; padding: .1rem 0; }}
-.archive-summary::before {{ content: "▸"; transition: transform .2s;
-                             display: inline-block; color: var(--muted); }}
-details[open] > .archive-summary::before {{ transform: rotate(90deg); }}
-.archive-summary .card-title {{ margin-bottom: 0; }}
+
+/* ── Tabs ── */
+.tab-bar { display: flex; gap: 0; border-bottom: 1px solid var(--border);
+           margin-bottom: 1.4rem; }
+.tab-btn { background: none; border: none; border-bottom: 2px solid transparent;
+           color: var(--muted); cursor: pointer; font-size: .82rem; font-weight: 600;
+           letter-spacing: .06em; padding: .55rem 1.1rem; text-transform: uppercase;
+           transition: color .15s, border-color .15s; }
+.tab-btn:hover { color: var(--text); }
+.tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+.tab-btn .tab-badge { background: var(--surface2); border-radius: 9px;
+                      color: var(--muted); font-size: .7rem; font-weight: 700;
+                      margin-left: .35rem; padding: .05rem .4rem; }
+.tab-btn.active .tab-badge { background: var(--accent); color: #fff; }
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+/* ── Sort controls ── */
+.sort-controls { display: flex; align-items: center; gap: .4rem; margin-left: auto; }
+.sort-label { color: var(--muted); font-size: .75rem; }
+.sort-btn { background: none; border: 1px solid var(--border); border-radius: 5px;
+            color: var(--muted); cursor: pointer; font-size: .75rem;
+            padding: .2rem .55rem; transition: all .15s; }
+.sort-btn:hover { border-color: var(--border2); color: var(--text); }
+.sort-btn.active { background: var(--surface2); border-color: var(--border2); color: var(--text); }
 </style>
 </head>
 <body>
@@ -1268,57 +1287,73 @@ details[open] > .archive-summary::before {{ transform: rotate(90deg); }}
 
 <main>
 
-  <!-- Add Thread -->
-  <div class="card">
-    <div class="card-title">Add Thread</div>
-    <div id="drop-zone"
-         ondragover="onDragOver(event)"
-         ondragleave="onDragLeave(event)"
-         ondrop="onDrop(event)">
-      <textarea id="url-input"
-                placeholder="Paste or drag a 4chan thread URL here&#10;e.g. https://boards.4chan.org/g/thread/12345678"
-                rows="2"
-                onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();addThread()}"
-                oninput="clearErr()"></textarea>
-    </div>
-    <div class="input-footer">
-      <span class="input-hint">
-        <span class="hint-pill">Enter</span> to add &nbsp;·&nbsp;
-        <span class="hint-pill">Ctrl+V</span> paste &nbsp;·&nbsp;
-        drag tab from browser
-      </span>
-      <button class="btn primary" id="add-btn" onclick="addThread()">+ Add Thread</button>
-    </div>
-    <div id="url-error" style="margin-top:.5rem;font-size:.8rem;color:var(--red);display:none"></div>
+  <!-- Tab bar -->
+  <div class="tab-bar">
+    <button class="tab-btn active" id="tab-btn-threads" onclick="switchTab('threads')">Threads</button>
+    <button class="tab-btn" id="tab-btn-archive" onclick="switchTab('archive')">Archive<span class="tab-badge" id="archive-count-badge">0</span></button>
+    <button class="tab-btn" id="tab-btn-settings" onclick="switchTab('settings')" title="Settings">&#9881;</button>
   </div>
 
-  <!-- Thread List -->
-  <div class="card">
-    <div class="threads-header">
-      <div class="card-title">Monitored Threads</div>
-      <span class="count-badge" id="count-badge">0</span>
-      <div class="next-run">
-        Next run: <strong id="next-run-display">—</strong>
+  <!-- Tab: Threads -->
+  <div class="tab-panel active" id="tab-threads">
+
+    <!-- Add Thread -->
+    <div class="card">
+      <div class="card-title">Add Thread</div>
+      <div id="drop-zone"
+           ondragover="onDragOver(event)"
+           ondragleave="onDragLeave(event)"
+           ondrop="onDrop(event)">
+        <textarea id="url-input"
+                  placeholder="Paste or drag a 4chan thread URL here&#10;e.g. https://boards.4chan.org/g/thread/12345678"
+                  rows="2"
+                  onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();addThread()}"
+                  oninput="clearErr()"></textarea>
       </div>
+      <div class="input-footer">
+        <span class="input-hint">
+          <span class="hint-pill">Enter</span> to add &nbsp;·&nbsp;
+          <span class="hint-pill">Ctrl+V</span> paste &nbsp;·&nbsp;
+          drag tab from browser
+        </span>
+        <button class="btn primary" id="add-btn" onclick="addThread()">+ Add Thread</button>
+      </div>
+      <div id="url-error" style="margin-top:.5rem;font-size:.8rem;color:var(--red);display:none"></div>
     </div>
-    <div id="thread-list"></div>
+
+    <!-- Thread List -->
+    <div class="card">
+      <div class="threads-header">
+        <div class="card-title">Monitored Threads</div>
+        <span class="count-badge" id="count-badge">0</span>
+        <div class="next-run">
+          Next run: <strong id="next-run-display">—</strong>
+        </div>
+      </div>
+      <div id="thread-list"></div>
+    </div>
+
   </div>
 
-  <!-- Archived Threads -->
-  <div class="card">
-    <details id="archive-details">
-      <summary class="archive-summary">
+  <!-- Tab: Archive -->
+  <div class="tab-panel" id="tab-archive">
+    <div class="card">
+      <div class="threads-header">
         <div class="card-title">Archived Threads</div>
-        <span class="count-badge" id="archive-count-badge">0</span>
-      </summary>
-      <div id="archive-list" style="margin-top:.9rem"></div>
-    </details>
+        <div class="sort-controls">
+          <span class="sort-label">Sort:</span>
+          <button class="sort-btn active" id="sort-title" onclick="setSort('title')">Title</button>
+          <button class="sort-btn" id="sort-board" onclick="setSort('board')">Board</button>
+        </div>
+      </div>
+      <div id="archive-list"></div>
+    </div>
   </div>
 
-  <!-- Settings -->
-  <div class="card">
-    <details id="settings-details">
-      <summary>Settings</summary>
+  <!-- Tab: Settings -->
+  <div class="tab-panel" id="tab-settings">
+    <div class="card">
+      <div class="card-title" style="margin-bottom:1rem">Settings</div>
       <div class="settings-grid">
         <div class="setting">
           <label>Interval (minutes)</label>
@@ -1396,7 +1431,7 @@ baked</textarea>
         <button class="btn" onclick="saveConfig()">Save Settings</button>
         <span class="save-ok" id="save-ok">&#10003; Saved</span>
       </div>
-    </details>
+    </div>
   </div>
 
 </main>
@@ -1405,9 +1440,29 @@ baked</textarea>
 
 <script>
 // ── State ──────────────────────────────────────────────────────────────────────
-let threads    = [];
-let nextRunTs  = null;
-let isRunning  = false;
+let threads        = [];
+let nextRunTs      = null;
+let isRunning      = false;
+let archiveSortKey = 'title';   // 'title' | 'board'
+
+// ── Tab navigation ─────────────────────────────────────────────────────────────
+function switchTab(name) {
+  try {
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById('tab-' + name).classList.add('active');
+    document.getElementById('tab-btn-' + name).classList.add('active');
+    localStorage.setItem('activeTab', name);
+  } catch (_) {}
+}
+
+// ── Sort (archive tab) ─────────────────────────────────────────────────────────
+function setSort(key) {
+  archiveSortKey = key;
+  document.querySelectorAll('.sort-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('sort-' + key).classList.add('active');
+  renderTable();
+}
 
 // ── Boot ───────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
@@ -1415,6 +1470,12 @@ document.addEventListener('DOMContentLoaded', () => {
   refresh();
   setInterval(refresh, 15000);
   setInterval(tickCountdown, 1000);
+
+  // Restore last active tab
+  try {
+    const saved = localStorage.getItem('activeTab');
+    if (saved) switchTab(saved);
+  } catch (_) {}
 
   // Global paste: if nothing editable is focused, populate URL input
   document.addEventListener('paste', e => {
@@ -1535,7 +1596,12 @@ function renderTable() {
   if (!archived.length) {
     al.innerHTML = '<div class="empty" style="padding:1.5rem 1rem"><p>No archived threads yet.</p></div>';
   } else {
-    al.innerHTML = makeTable(archived.map(t => makeRow(t, true)).join(''));
+    const sorted = [...archived].sort((a, b) => {
+      const va = archiveSortKey === 'board' ? (a.board || '') : (a.title || '');
+      const vb = archiveSortKey === 'board' ? (b.board || '') : (b.title || '');
+      return va.localeCompare(vb);
+    });
+    al.innerHTML = makeTable(sorted.map(t => makeRow(t, true)).join(''));
   }
 }
 
