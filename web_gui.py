@@ -340,7 +340,7 @@ def run_all_threads():
                 discovered_named = _scan_catalogs_for_patterns(cfg)
                 for board, thread_no in discovered_named:
                     try:
-                        _auto_add_thread(board, thread_no, cfg)
+                        _auto_add_thread(board, thread_no, cfg, source="named_discovery")
                     except Exception as exc:
                         log.error("Named discovery error /%s/%d: %s", board, thread_no, exc)
             except Exception as exc:
@@ -355,9 +355,10 @@ def run_all_threads():
         _run_state["running"] = False
         _run_lock.release()
 
-def _auto_add_thread(board: str, thread_no: int, cfg: dict):
+def _auto_add_thread(board: str, thread_no: int, cfg: dict, source: str = "follow"):
     """Add a discovered successor thread to the monitored list if not already present.
     Must NOT be called while holding _threads_lock — acquires the lock itself.
+    source: "follow" for link-based successor, "named_discovery" for pattern match.
     """
     tid = f"{board}_{thread_no}"
     with _threads_lock:
@@ -379,7 +380,10 @@ def _auto_add_thread(board: str, thread_no: int, cfg: dict):
             "added_at":       datetime.utcnow().isoformat() + "Z",
         }
         if cfg.get("follow_tag_auto_added", True):
-            new_t["auto_added"] = True
+            if source == "named_discovery":
+                new_t["named_discovery"] = True
+            else:
+                new_t["auto_added"] = True
         ts.append(new_t)
         save_threads(ts)
         log.info("Auto-followed new thread: /%s/ %d", board, thread_no)
@@ -1408,7 +1412,7 @@ details[open] > summary::before { transform: rotate(90deg); }
   animation: spin .55s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
-.auto-tag { color: var(--orange); font-size: .72rem; cursor: default;
+.auto-tag { color: var(--orange); font-size: .9rem; cursor: default;
             flex-shrink: 0; user-select: none; }
 
 /* ── Tabs ── */
@@ -1861,6 +1865,7 @@ function makeRow(t, isArchived) {
       <td class="col-title"><div class="title-cell">
         <a class="title-link" href="/archive/${esc(t.board)}/${esc(t.thread_no)}" target="_blank" title="${ttl}">${ttl}</a>
         ${t.auto_added ? '<span class="auto-tag" title="Auto-followed">&#x2935;</span>' : ''}
+        ${t.named_discovery ? '<span class="auto-tag" title="Named thread discovery">&#x2248;</span>' : ''}
         <a class="live-btn" href="${esc(t.url)}" target="_blank" rel="noopener" title="Open on 4chan">4chan &#8599;</a>
       </div></td>
       <td><span class="board-tag">/${esc(t.board)}/</span></td>
