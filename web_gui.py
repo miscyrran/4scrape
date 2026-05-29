@@ -68,6 +68,7 @@ DEFAULT_CONFIG = {
     "follow_keywords":       ["new thread", "new bread", "bake", "baked"],
     "auto_archive_on_404":          True,
     "auto_archive_on_4chan_archive": True,
+    "thread_patterns":       [],
 }
 
 # ── Config I/O ────────────────────────────────────────────────────────────────
@@ -333,6 +334,18 @@ def run_all_threads():
             except Exception as exc:
                 log.error("Auto-follow error /%s/%d: %s", board, thread_no, exc)
 
+        # Named pattern discovery (runs after successor discovery)
+        if cfg.get("thread_patterns"):
+            try:
+                discovered_named = _scan_catalogs_for_patterns(cfg)
+                for board, thread_no in discovered_named:
+                    try:
+                        _auto_add_thread(board, thread_no, cfg)
+                    except Exception as exc:
+                        log.error("Named discovery error /%s/%d: %s", board, thread_no, exc)
+            except Exception as exc:
+                log.error("Pattern scanning error: %s", exc, exc_info=True)
+
         interval = cfg.get("interval_minutes", 30)
         _run_state["next_run_ts"] = (
             datetime.utcnow() + timedelta(minutes=interval)
@@ -383,6 +396,76 @@ def _auto_add_thread(board: str, thread_no: int, cfg: dict):
 
     threading.Thread(target=_initial_scrape, daemon=True,
                      name=f"auto-scrape-{tid}").start()
+
+def _matches_pattern(pattern: str, subject: str, opening_post: str) -> bool:
+    """Case-insensitive substring match against subject and opening post."""
+    pattern_lower = pattern.lower()
+    subject_lower = (subject or "").lower()
+    body_lower = _clean_html(opening_post or "").lower()
+    return pattern_lower in subject_lower or pattern_lower in body_lower
+
+def _scan_catalogs_for_patterns(cfg: dict) -> list:
+    """Scan catalogs for all enabled patterns. Returns [(board, thread_no), ...]"""
+    patterns = [p for p in cfg.get("thread_patterns", []) if p.get("enabled", True)]
+    if not patterns:
+        return []
+
+    log.info("Scanning catalogs for named patterns...")
+
+    # Group patterns by board to minimize catalog fetches
+    boards_to_scan = {p["board"] for p in patterns}
+    catalog_data = {}
+
+    # Fetch catalogs once per board
+    for board in sorted(boards_to_scan):
+        url = f"{API_BASE}/{board}/catalog.json"
+        data = _api_get(url)
+        if data:
+            threads = []
+            for page in data:
+                threads.extend(page.get("threads", []))
+            catalog_data[board] = threads
+            time.sleep(cfg.get("catalog_delay", 10.0))
+        else:
+            log.warning("Could not fetch catalog for /%s/", board)
+
+    # Match patterns against catalogs
+    discovered = {}  # (board, thread_no) -> True (dedupe)
+    with _threads_lock:
+        monitored = load_threads()
+        monitored_ids = {t["id"] for t in monitored}
+
+    for pattern in patterns:
+        board = pattern["board"]
+        name_pattern = pattern["name_pattern"]
+        last_discovered = pattern.get("last_discovered")
+
+        if board not in catalog_data:
+            continue
+
+        for thread in catalog_data[board]:
+            thread_no = thread["no"]
+            tid = f"{board}_{thread_no}"
+
+            # Skip if already monitored
+            if tid in monitored_ids:
+                continue
+
+            # Skip if this is last-discovered thread for this pattern (still active)
+            if last_discovered == tid:
+                continue
+
+            # Check fuzzy match
+            if _matches_pattern(name_pattern, thread.get("sub"), thread.get("com")):
+                discovered[(board, thread_no)] = True
+                pattern["last_discovered"] = tid
+                log.info("  Pattern '%s' matched: /%s/%d", name_pattern, board, thread_no)
+                break  # Only add first match per pattern per cycle
+
+    # Save updated patterns back to config
+    save_cfg(cfg)
+
+    return list(discovered.keys())
 
 def start_scheduler(interval: int):
     _run_state["next_run_ts"] = (
@@ -510,6 +593,76 @@ def api_scrape_one(tid: str):
                 save_threads(ts)
 
     threading.Thread(target=_run, daemon=True).start()
+    return jsonify({"ok": True})
+
+@app.route("/api/patterns", methods=["GET"])
+def api_get_patterns():
+    cfg = load_cfg()
+    return jsonify(cfg.get("thread_patterns", []))
+
+@app.route("/api/patterns", methods=["POST"])
+def api_add_pattern():
+    import uuid
+    data = request.get_json(silent=True) or {}
+    board = (data.get("board") or "").strip()
+    name_pattern = (data.get("name_pattern") or "").strip()
+
+    if not board or not name_pattern:
+        return jsonify({"error": "board and name_pattern are required"}), 400
+
+    cfg = load_cfg()
+    patterns = cfg.get("thread_patterns", [])
+
+    new_pattern = {
+        "id": str(uuid.uuid4()),
+        "board": board,
+        "name_pattern": name_pattern,
+        "enabled": True,
+        "last_discovered": None,
+        "added_at": datetime.utcnow().isoformat() + "Z",
+    }
+
+    patterns.append(new_pattern)
+    cfg["thread_patterns"] = patterns
+    save_cfg(cfg)
+
+    return jsonify(new_pattern), 201
+
+@app.route("/api/patterns/<pattern_id>", methods=["PATCH"])
+def api_update_pattern(pattern_id: str):
+    data = request.get_json(silent=True) or {}
+    cfg = load_cfg()
+    patterns = cfg.get("thread_patterns", [])
+
+    idx = next((i for i, p in enumerate(patterns) if p["id"] == pattern_id), None)
+    if idx is None:
+        return jsonify({"error": "Pattern not found"}), 404
+
+    if "name_pattern" in data:
+        patterns[idx]["name_pattern"] = data["name_pattern"].strip()
+    if "board" in data:
+        patterns[idx]["board"] = data["board"].strip()
+    if "enabled" in data:
+        patterns[idx]["enabled"] = bool(data["enabled"])
+
+    cfg["thread_patterns"] = patterns
+    save_cfg(cfg)
+
+    return jsonify(patterns[idx])
+
+@app.route("/api/patterns/<pattern_id>", methods=["DELETE"])
+def api_remove_pattern(pattern_id: str):
+    cfg = load_cfg()
+    patterns = cfg.get("thread_patterns", [])
+    before = len(patterns)
+    patterns = [p for p in patterns if p["id"] != pattern_id]
+
+    if len(patterns) == before:
+        return jsonify({"error": "Pattern not found"}), 404
+
+    cfg["thread_patterns"] = patterns
+    save_cfg(cfg)
+
     return jsonify({"ok": True})
 
 @app.route("/api/status", methods=["GET"])
@@ -1439,6 +1592,31 @@ baked</textarea>
           </div>
         </div>
       </div>
+      <div class="settings-section">
+        <div class="settings-section-title">Named Thread Discovery</div>
+        <div style="margin-bottom:1rem;font-size:.875rem;color:var(--muted)">
+          Automatically monitor threads matching name patterns. Runs after link-based successor discovery.
+        </div>
+        <div id="patterns-list" style="margin-bottom:1rem"></div>
+        <button class="btn" style="margin-top:.5rem" onclick="showAddPatternForm()">+ Add Pattern</button>
+
+        <div id="add-pattern-form" style="display:none;margin-top:1rem;padding:1rem;background:var(--surface2);border:1px solid var(--border);border-radius:8px">
+          <div style="display:grid;gap:.75rem">
+            <div class="setting">
+              <label>Board (e.g. g, a, v)</label>
+              <input type="text" id="pattern-board" placeholder="g" style="background:var(--surface);border:1px solid var(--border);border-radius:5px;color:var(--text);padding:.32rem .6rem;font-size:.875rem;width:100%;outline:none;transition:border-color .15s" onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'">
+            </div>
+            <div class="setting">
+              <label>Name Pattern (e.g. RWBY General)</label>
+              <input type="text" id="pattern-name" placeholder="RWBY General" style="background:var(--surface);border:1px solid var(--border);border-radius:5px;color:var(--text);padding:.32rem .6rem;font-size:.875rem;width:100%;outline:none;transition:border-color .15s" onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'">
+            </div>
+            <div style="display:flex;gap:.5rem">
+              <button class="btn primary" onclick="savePattern()">Save Pattern</button>
+              <button class="btn" onclick="cancelAddPattern()">Cancel</button>
+            </div>
+          </div>
+        </div>
+      </div>
       <div class="settings-footer">
         <button class="btn" onclick="saveConfig()">Save Settings</button>
         <span class="save-ok" id="save-ok">&#10003; Saved</span>
@@ -1456,6 +1634,7 @@ let threads        = [];
 let nextRunTs      = null;
 let isRunning      = false;
 let archiveSortKey = 'title';   // 'title' | 'board'
+let patterns       = [];
 
 // ── Tab navigation ─────────────────────────────────────────────────────────────
 function switchTab(name) {
@@ -1465,6 +1644,10 @@ function switchTab(name) {
     document.getElementById('tab-' + name).classList.add('active');
     document.getElementById('tab-btn-' + name).classList.add('active');
     localStorage.setItem('activeTab', name);
+    if (name === 'settings') {
+      loadConfig();
+      fetchPatterns();
+    }
   } catch (_) {}
 }
 
@@ -1545,6 +1728,110 @@ async function loadConfig() {
     document.getElementById('cfg-autoarchive-404').checked  = cfg.auto_archive_on_404 !== false;
     document.getElementById('cfg-autoarchive-4chan').checked = cfg.auto_archive_on_4chan_archive !== false;
   } catch (_) {}
+}
+
+// ── Pattern management ─────────────────────────────────────────────────────────
+async function fetchPatterns() {
+  try {
+    const r = await fetch('/api/patterns');
+    if (r.ok) patterns = await r.json();
+    renderPatterns();
+  } catch (_) {}
+}
+
+function renderPatterns() {
+  const el = document.getElementById('patterns-list');
+  if (!patterns.length) {
+    el.innerHTML = '<p style="color:var(--muted);font-size:.85rem">No patterns configured yet.</p>';
+    return;
+  }
+
+  const cards = patterns.map(p => {
+    const status = p.last_discovered
+      ? `Last matched: ${esc(p.last_discovered)}`
+      : 'Active (no matches yet)';
+    const toggleBtn = p.enabled
+      ? `<button class="btn-icon" onclick="togglePattern('${esc(p.id)}', false)" title="Disable">&#x23f8;</button>`
+      : `<button class="btn-icon" onclick="togglePattern('${esc(p.id)}', true)" title="Enable">&#x25b6;</button>`;
+
+    return `
+      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:.9rem;margin-bottom:.65rem">
+        <div style="display:flex;align-items:center;gap:.6rem;margin-bottom:.4rem">
+          <span class="board-tag">/${esc(p.board)}/</span>
+          <strong style="font-size:.875rem">${esc(p.name_pattern)}</strong>
+          <span style="margin-left:auto;display:flex;gap:.35rem">
+            ${toggleBtn}
+            <button class="btn-icon danger" onclick="deletePattern('${esc(p.id)}')" title="Delete">&#x2715;</button>
+          </span>
+        </div>
+        <div style="font-size:.78rem;color:var(--muted)">${status}</div>
+      </div>
+    `;
+  }).join('');
+
+  el.innerHTML = cards;
+}
+
+function showAddPatternForm() {
+  document.getElementById('add-pattern-form').style.display = 'block';
+  document.getElementById('pattern-board').value = '';
+  document.getElementById('pattern-name').value = '';
+  document.getElementById('pattern-board').focus();
+}
+
+function cancelAddPattern() {
+  document.getElementById('add-pattern-form').style.display = 'none';
+}
+
+async function savePattern() {
+  const board = document.getElementById('pattern-board').value.trim();
+  const name = document.getElementById('pattern-name').value.trim();
+
+  if (!board || !name) {
+    toast('Board and name pattern are required', 'error');
+    return;
+  }
+
+  try {
+    const r = await fetch('/api/patterns', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({board, name_pattern: name})
+    });
+
+    if (r.ok) {
+      toast('Pattern added', 'success');
+      cancelAddPattern();
+      await fetchPatterns();
+    } else {
+      const data = await r.json();
+      toast(data.error || 'Failed to add pattern', 'error');
+    }
+  } catch (_) {
+    toast('Network error', 'error');
+  }
+}
+
+async function togglePattern(id, enabled) {
+  try {
+    const r = await fetch('/api/patterns/' + encodeURIComponent(id), {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({enabled})
+    });
+    if (r.ok) await fetchPatterns();
+  } catch (_) { toast('Network error', 'error'); }
+}
+
+async function deletePattern(id) {
+  if (!confirm('Delete this pattern?')) return;
+  try {
+    const r = await fetch('/api/patterns/' + encodeURIComponent(id), {method: 'DELETE'});
+    if (r.ok) {
+      toast('Pattern deleted', 'info');
+      await fetchPatterns();
+    }
+  } catch (_) { toast('Network error', 'error'); }
 }
 
 // ── Render table ───────────────────────────────────────────────────────────────
