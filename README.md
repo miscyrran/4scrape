@@ -48,11 +48,24 @@ Threads can be moved to a collapsible **Archived Threads** section at any time u
 
 Threads can also be archived automatically — see the Auto-archive settings below.
 
+### Thread icons
+
+| Icon | Meaning |
+|------|---------|
+| ⤵ | Auto-followed — added because a post in a previous thread linked to it |
+| ≈ | Named discovery — added because its title matched a configured name pattern |
+
 ### Thread following
 
 When a thread is nearing its bump limit, users typically post a "new thread" link pointing to the successor thread. 4scrape can detect these posts and automatically add the linked thread to the monitored list.
 
 Threads added this way are tagged with a ⤵ icon in the thread list.
+
+### Named thread discovery
+
+If a successor thread is not linked directly, 4scrape can also find it by scanning board catalogs for threads whose title fuzzy-matches a configured name pattern. Patterns are managed under **Named Thread Discovery** in the Settings panel.
+
+Threads added this way are tagged with a ≈ icon in the thread list.
 
 ## Configuration
 
@@ -76,7 +89,7 @@ Settings are available in the collapsible panel at the bottom of the GUI.
 | Enable thread following | on | Scan new posts for successor thread links |
 | Only near bump limit | on | Only scan threads with 300 or more posts |
 | Allow cross-board links | off | Follow links that point to a different board |
-| Tag auto-added threads | on | Show the ⤵ icon on automatically followed threads |
+| Tag auto-added threads | on | Show the ⤵ or ≈ icon on automatically added threads |
 | Keywords | `new thread`, `new bread`, `bake`, `baked` | A post must contain one of these words alongside a cross-thread link to trigger following |
 
 ### Auto-archive
