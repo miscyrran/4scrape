@@ -1135,6 +1135,18 @@ main { max-width: 1160px; margin: 0 auto; padding: 1.4rem 1.5rem; }
 .empty p  { font-size: .83rem; }
 
 /* ── Settings ── */
+.settings-section {
+  border-top: 1px solid var(--border);
+  padding-top: 1rem;
+  margin-top: 1.4rem;
+}
+.settings-section-title {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: .85rem;
+  letter-spacing: 0.02em;
+}
 details > summary {
   cursor: pointer;
   list-style: none;
@@ -1380,9 +1392,9 @@ details[open] > summary::before { transform: rotate(90deg); }
           <label for="cfg-json">Save raw JSON</label>
         </div>
       </div>
-      <details style="margin-top:1rem">
-        <summary>Thread Following</summary>
-        <div class="settings-grid" style="margin-top:.85rem">
+      <div class="settings-section">
+        <div class="settings-section-title">Thread Following</div>
+        <div class="settings-grid">
           <div class="setting checkbox-row">
             <input type="checkbox" id="cfg-follow-enabled" checked>
             <label for="cfg-follow-enabled">Enable thread following</label>
@@ -1413,10 +1425,10 @@ bake
 baked</textarea>
           </div>
         </div>
-      </details>
-      <details style="margin-top:1rem">
-        <summary>Auto-archive</summary>
-        <div class="settings-grid" style="margin-top:.85rem">
+      </div>
+      <div class="settings-section">
+        <div class="settings-section-title">Auto-archive</div>
+        <div class="settings-grid">
           <div class="setting checkbox-row">
             <input type="checkbox" id="cfg-autoarchive-404" checked>
             <label for="cfg-autoarchive-404">Auto-archive when thread 404s</label>
@@ -1426,7 +1438,7 @@ baked</textarea>
             <label for="cfg-autoarchive-4chan">Auto-archive when 4chan archives the thread</label>
           </div>
         </div>
-      </details>
+      </div>
       <div class="settings-footer">
         <button class="btn" onclick="saveConfig()">Save Settings</button>
         <span class="save-ok" id="save-ok">&#10003; Saved</span>
