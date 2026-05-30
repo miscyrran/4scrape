@@ -134,12 +134,16 @@ def read_stealth_metadata(filepath: Path) -> Optional[str]:
         rgb_bits[2::3] = b_bits
 
         has_alpha = bool(np.any(arr_T[:, :, 3] < 255))
-        sig_len = len('stealth_pnginfo') * 8  # 112 bits
+        sig_len = len('stealth_pnginfo') * 8  # 120 bits (15 chars)
+
+        import logging
+        logging.debug(f"[Stealth] {filepath.name}: {width}x{height} has_alpha={has_alpha}")
 
         # --- Try alpha channel (stealth_pnginfo / stealth_pngcomp) ---
         if has_alpha and len(a_bits) >= sig_len + 32:
             sig_bytes = _bits_to_bytes(a_bits[:sig_len])
             decoded_sig = sig_bytes.decode('latin1', errors='ignore')
+            logging.debug(f"[Stealth] {filepath.name}: alpha_sig={decoded_sig!r}")
             if decoded_sig in ('stealth_pnginfo', 'stealth_pngcomp'):
                 compressed = (decoded_sig == 'stealth_pngcomp')
                 param_len = _bits_to_int(a_bits[sig_len:sig_len + 32])
@@ -157,6 +161,7 @@ def read_stealth_metadata(filepath: Path) -> Optional[str]:
         if len(rgb_bits) >= sig_len + 32:
             sig_bytes = _bits_to_bytes(rgb_bits[:sig_len])
             decoded_sig = sig_bytes.decode('latin1', errors='ignore')
+            logging.debug(f"[Stealth] {filepath.name}: rgb_sig={decoded_sig!r}")
             if decoded_sig in ('stealth_rgbinfo', 'stealth_rgbcomp'):
                 compressed = (decoded_sig == 'stealth_rgbcomp')
                 # JS reads 33 bits, takes first 32 as length
