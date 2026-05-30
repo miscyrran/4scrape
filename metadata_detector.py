@@ -183,12 +183,17 @@ def get_thread_metadata_status(thread_dir: Path, force_rescan: bool = False) -> 
     Get metadata status for all images in a thread.
     Uses cache if available, otherwise scans and caches.
     """
+    import logging
+
     if not force_rescan:
         cache = load_metadata_cache(thread_dir)
         if cache:
+            logging.info(f"[MetadataDetector] Loaded cache for {thread_dir.name}: {len(cache)} entries")
             return cache
 
     # Scan and cache
+    logging.info(f"[MetadataDetector] Scanning images in {thread_dir.name}...")
     results = scan_thread_images(thread_dir)
+    logging.info(f"[MetadataDetector] Scan complete: {sum(1 for v in results.values() if v)} of {len(results)} have metadata")
     save_metadata_cache(thread_dir, results)
     return results
