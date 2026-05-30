@@ -3,6 +3,7 @@ SD Metadata Detection Module for 4scrape
 Detects and extracts Stable Diffusion metadata from images
 """
 import json
+import gzip
 import struct
 import zlib
 from pathlib import Path
@@ -152,31 +153,18 @@ def read_stealth_metadata(filepath: Path) -> Optional[str]:
                 logging.debug(f"[Stealth] {filepath.name}: alpha param_len={param_len} a_bits={len(a_bits)} data_end={data_end}")
                 if param_len > 0 and len(a_bits) >= data_end:
                     byte_data = _bits_to_bytes(a_bits[data_start:data_end])
-                    logging.debug(f"[Stealth] {filepath.name}: first 8 bytes hex: {byte_data[:8].hex()}")
-                    try:
-                        if compressed:
-                            byte_data = zlib.decompress(byte_data)
+                    if compressed:
+                        try:
+                            byte_data = gzip.decompress(byte_data)
+                        except Exception:
+                            try:
+                                byte_data = zlib.decompress(byte_data)
+                            except Exception:
+                                byte_data = None
+                    if byte_data:
                         decoded = byte_data.decode('utf-8', errors='ignore')
                         if decoded and len(decoded.strip()) > 10:
                             return decoded
-                        else:
-                            logging.debug(f"[Stealth] {filepath.name}: decoded too short: {len(decoded.strip())}")
-                    except Exception as e:
-                        logging.debug(f"[Stealth] {filepath.name}: decompress/decode error: {e}")
-                        # Try byte-reversed bit order
-                        try:
-                            raw_bits = a_bits[data_start:data_end]
-                            # Reverse bit order within each byte
-                            n8 = (len(raw_bits) // 8) * 8
-                            raw_bits = raw_bits[:n8].reshape(-1, 8)[:, ::-1].flatten()
-                            rev_bytes = np.packbits(raw_bits).tobytes()
-                            logging.debug(f"[Stealth] {filepath.name}: bit-reversed first 8 bytes: {rev_bytes[:8].hex()}")
-                            raw = zlib.decompress(rev_bytes)
-                            decoded = raw.decode('utf-8', errors='ignore')
-                            if decoded and len(decoded.strip()) > 10:
-                                return decoded
-                        except Exception as e2:
-                            logging.debug(f"[Stealth] {filepath.name}: bit-reversed also failed: {e2}")
 
         # --- Try RGB channels (stealth_rgbinfo / stealth_rgbcomp) ---
         if len(rgb_bits) >= sig_len + 32:
@@ -192,10 +180,17 @@ def read_stealth_metadata(filepath: Path) -> Optional[str]:
                 if param_len > 0 and len(rgb_bits) >= data_end:
                     byte_data = _bits_to_bytes(rgb_bits[data_start:data_end])
                     if compressed:
-                        byte_data = zlib.decompress(byte_data)
-                    decoded = byte_data.decode('utf-8', errors='ignore')
-                    if decoded and len(decoded.strip()) > 10:
-                        return decoded
+                        try:
+                            byte_data = gzip.decompress(byte_data)
+                        except Exception:
+                            try:
+                                byte_data = zlib.decompress(byte_data)
+                            except Exception:
+                                byte_data = None
+                    if byte_data:
+                        decoded = byte_data.decode('utf-8', errors='ignore')
+                        if decoded and len(decoded.strip()) > 10:
+                            return decoded
 
         return None
 
