@@ -792,6 +792,9 @@ def archive_view(board: str, thread_no: int):
 
         # Load metadata cache for this thread
         metadata_cache = metadata_detector.get_thread_metadata_status(thread_dir) if thread_dir else {}
+        logging.info(f"[Metadata] Thread {thread_no}: cache loaded with {len(metadata_cache)} entries")
+        with_metadata = sum(1 for v in metadata_cache.values() if v)
+        logging.info(f"[Metadata] Thread {thread_no}: {with_metadata} images have metadata")
 
         def render_post(p):
             no   = p.get("no", "?")
