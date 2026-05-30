@@ -974,6 +974,18 @@ main{{max-width:860px;margin:0 auto;padding:1.4rem 1.2rem}}
   transform:scale(1.1);
   box-shadow:0 4px 12px rgba(0,255,136,0.6);
 }}
+.metadata-filter{{
+  cursor:pointer;
+  user-select:none;
+  font-size:.82rem;
+}}
+.metadata-filter input{{
+  margin-right:.3rem;
+  cursor:pointer;
+}}
+.post.filtered-hidden{{
+  display:none;
+}}
 #metadata-modal{{
   position:fixed;
   top:0;
@@ -1082,7 +1094,11 @@ main{{max-width:860px;margin:0 auto;padding:1.4rem 1.2rem}}
   <div class="thread-info">
     Board: <strong>/{html_lib.escape(board)}/</strong> &nbsp;·&nbsp;
     Thread: <strong>{thread_no}</strong> &nbsp;·&nbsp;
-    Archived locally
+    Archived locally &nbsp;·&nbsp;
+    <label class="metadata-filter">
+      <input type="checkbox" id="filter-metadata">
+      Show only posts with metadata
+    </label>
   </div>
   {body}
 </main>
@@ -1194,6 +1210,25 @@ function escapeHtml(text) {{
   const div = document.createElement('div');
   div.textContent = text;
   return div.innerHTML;
+}}
+
+// Metadata filter
+const filterCheckbox = document.getElementById('filter-metadata');
+if (filterCheckbox) {{
+  filterCheckbox.addEventListener('change', () => {{
+    const allPosts = document.querySelectorAll('.post');
+    const filterActive = filterCheckbox.checked;
+
+    allPosts.forEach(post => {{
+      const hasMetadata = post.querySelector('.metadata-badge') !== null;
+
+      if (filterActive && !hasMetadata) {{
+        post.classList.add('filtered-hidden');
+      }} else {{
+        post.classList.remove('filtered-hidden');
+      }}
+    }});
+  }});
 }}
 </script>
 </body>
