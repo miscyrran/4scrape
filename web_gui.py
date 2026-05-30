@@ -31,6 +31,9 @@ import requests
 import schedule
 from flask import Flask, jsonify, request
 
+# Local imports
+import metadata_detector
+
 # ── Logging ───────────────────────────────────────────────────────────────────
 
 logging.basicConfig(
@@ -787,6 +790,9 @@ def archive_view(board: str, thread_no: int):
             ):
                 backlinks.setdefault(int(m.group(1)), []).append(p["no"])
 
+        # Load metadata cache for this thread
+        metadata_cache = metadata_detector.get_thread_metadata_status(thread_dir) if thread_dir else {}
+
         def render_post(p):
             no   = p.get("no", "?")
             name = html_lib.escape(p.get("name") or "Anonymous")
@@ -809,9 +815,22 @@ def archive_view(board: str, thread_no: int):
                 ext_lower = (p.get("ext") or "").lower()
                 if img_path.exists():
                     src_url = f"/archive-img/{board}/{thread_no}/{html_lib.escape(orig)}"
+
+                    # Check for metadata
+                    has_metadata = metadata_cache.get(orig, False)
+                    metadata_badge = ""
+                    if has_metadata:
+                        metadata_url = f"/archive-metadata/{board}/{thread_no}/{html_lib.escape(orig)}"
+                        metadata_badge = (
+                            f'<span class="metadata-badge" '
+                            f'data-metadata-url="{metadata_url}" '
+                            f'title="SD metadata detected - click to view">SD</span>'
+                        )
+
                     if ext_lower in (".webm", ".mp4"):
                         img_html = (
                             f'<div class="post-img">'
+                            f'{metadata_badge}'
                             f'<video controls preload="metadata" '
                             f'src="{src_url}">'
                             f'<a href="{src_url}" target="_blank">{html_lib.escape(orig)}</a>'
@@ -820,6 +839,7 @@ def archive_view(board: str, thread_no: int):
                     else:
                         img_html = (
                             f'<div class="post-img">'
+                            f'{metadata_badge}'
                             f'<img src="{src_url}" '
                             f'alt="{html_lib.escape(orig)}" loading="lazy"></div>'
                         )
@@ -933,6 +953,123 @@ main{{max-width:860px;margin:0 auto;padding:1.4rem 1.2rem}}
 .not-found{{text-align:center;padding:4rem 1rem;color:var(--muted)}}
 .not-found h2{{color:var(--text);margin-bottom:.75rem}}
 .not-found a{{color:var(--blue)}}
+.metadata-badge{{
+  position:absolute;
+  top:8px;
+  left:8px;
+  background:linear-gradient(135deg, #00ff88 0%, #00cc66 100%);
+  color:#000;
+  font-weight:700;
+  font-size:11px;
+  padding:4px 8px;
+  border-radius:4px;
+  cursor:pointer;
+  z-index:10;
+  box-shadow:0 2px 6px rgba(0,255,136,0.4);
+  transition:all 0.2s;
+  user-select:none;
+}}
+.metadata-badge:hover{{
+  transform:scale(1.1);
+  box-shadow:0 4px 12px rgba(0,255,136,0.6);
+}}
+.post-img{{
+  position:relative;
+}}
+#metadata-modal{{
+  position:fixed;
+  top:0;
+  left:0;
+  width:100%;
+  height:100%;
+  background:rgba(0,0,0,0.85);
+  display:flex;
+  justify-content:center;
+  align-items:center;
+  z-index:9999;
+  backdrop-filter:blur(3px);
+}}
+.metadata-content{{
+  background:var(--surface);
+  border:2px solid var(--green);
+  border-radius:12px;
+  padding:20px;
+  max-width:800px;
+  max-height:80vh;
+  width:90%;
+  box-shadow:0 4px 20px rgba(34,197,94,0.3);
+  display:flex;
+  flex-direction:column;
+}}
+.metadata-header{{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  margin-bottom:12px;
+  padding-bottom:10px;
+  border-bottom:1px solid var(--green);
+}}
+.metadata-header h2{{
+  margin:0;
+  color:var(--green);
+  font-size:18px;
+}}
+.metadata-close{{
+  background:var(--accent);
+  color:white;
+  border:none;
+  font-size:24px;
+  width:32px;
+  height:32px;
+  border-radius:6px;
+  cursor:pointer;
+  line-height:1;
+  transition:all 0.2s;
+}}
+.metadata-close:hover{{
+  background:#ff4444;
+  transform:scale(1.1);
+}}
+.metadata-filename{{
+  font-family:'Courier New',monospace;
+  font-size:12px;
+  color:var(--muted);
+  margin-bottom:10px;
+  word-break:break-all;
+}}
+.metadata-text{{
+  width:100%;
+  height:400px;
+  background:var(--bg);
+  color:var(--text);
+  border:1px solid var(--border);
+  border-radius:6px;
+  padding:12px;
+  font-family:'Courier New',monospace;
+  font-size:13px;
+  resize:vertical;
+  white-space:pre-wrap;
+  overflow-y:auto;
+}}
+.metadata-footer{{
+  margin-top:12px;
+  display:flex;
+  justify-content:flex-end;
+}}
+.metadata-copy{{
+  background:var(--green);
+  color:#000;
+  border:none;
+  padding:8px 16px;
+  border-radius:6px;
+  font-weight:600;
+  cursor:pointer;
+  transition:all 0.2s;
+}}
+.metadata-copy:hover{{
+  background:#22d55e;
+  transform:translateY(-1px);
+}}
 </style>
 </head>
 <body>
@@ -952,9 +1089,91 @@ main{{max-width:860px;margin:0 auto;padding:1.4rem 1.2rem}}
   {body}
 </main>
 <script>
+// Image expansion
 document.querySelectorAll('.post-img img').forEach(img => {{
   img.addEventListener('click', () => img.classList.toggle('expanded'));
 }});
+
+// Metadata viewer
+document.querySelectorAll('.metadata-badge').forEach(badge => {{
+  badge.addEventListener('click', async (e) => {{
+    e.preventDefault();
+    e.stopPropagation();
+    const url = badge.dataset.metadataUrl;
+
+    try {{
+      const response = await fetch(url);
+      const data = await response.json();
+
+      if (data.success) {{
+        showMetadataModal(data.filename, data.metadata);
+      }} else {{
+        alert('No metadata found');
+      }}
+    }} catch (err) {{
+      console.error('Failed to fetch metadata:', err);
+      alert('Failed to load metadata');
+    }}
+  }});
+}});
+
+function showMetadataModal(filename, metadata) {{
+  // Remove existing modal if present
+  const existing = document.getElementById('metadata-modal');
+  if (existing) {{
+    existing.remove();
+    return;
+  }}
+
+  const modal = document.createElement('div');
+  modal.id = 'metadata-modal';
+  modal.innerHTML = `
+    <div class="metadata-content">
+      <div class="metadata-header">
+        <h2>SD Metadata</h2>
+        <button class="metadata-close">&times;</button>
+      </div>
+      <div class="metadata-filename">${{escapeHtml(filename)}}</div>
+      <textarea readonly class="metadata-text">${{escapeHtml(metadata)}}</textarea>
+      <div class="metadata-footer">
+        <button class="metadata-copy">Copy to Clipboard</button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(modal);
+
+  // Close button
+  modal.querySelector('.metadata-close').addEventListener('click', () => modal.remove());
+
+  // Click outside to close
+  modal.addEventListener('click', (e) => {{
+    if (e.target === modal) modal.remove();
+  }});
+
+  // Copy button
+  modal.querySelector('.metadata-copy').addEventListener('click', async () => {{
+    try {{
+      await navigator.clipboard.writeText(metadata);
+      const btn = modal.querySelector('.metadata-copy');
+      const originalText = btn.textContent;
+      btn.textContent = 'Copied!';
+      btn.style.background = '#00ff00';
+      setTimeout(() => {{
+        btn.textContent = originalText;
+        btn.style.background = '';
+      }}, 2000);
+    }} catch (err) {{
+      alert('Failed to copy to clipboard');
+    }}
+  }});
+}}
+
+function escapeHtml(text) {{
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}}
 </script>
 </body>
 </html>"""
@@ -979,6 +1198,38 @@ def archive_img(board: str, thread_no: int, filename: str):
         return "Not found", 404
     mime = mimetypes.guess_type(safe)[0] or "application/octet-stream"
     return send_file(img, mimetype=mime)
+
+
+@app.route("/archive-metadata/<board>/<int:thread_no>/<path:filename>")
+def archive_metadata(board: str, thread_no: int, filename: str):
+    """Extract and return SD metadata from an archived image."""
+    cfg       = load_cfg()
+    archive   = Path(cfg.get("output_dir", "4chan_archive"))
+    board_dir = archive / board
+    matches   = list(board_dir.glob(f"{thread_no}_*")) if board_dir.exists() else []
+    if not matches:
+        return jsonify({"error": "Thread not found"}), 404
+
+    # Sanitise the filename
+    safe = Path(filename).name
+    img  = matches[0] / "images" / safe
+    if not img.exists() or not img.is_file():
+        return jsonify({"error": "Image not found"}), 404
+
+    # Extract metadata
+    metadata = metadata_detector.extract_metadata(img)
+    if metadata:
+        return jsonify({
+            "success": True,
+            "filename": safe,
+            "metadata": metadata
+        })
+    else:
+        return jsonify({
+            "success": False,
+            "filename": safe,
+            "error": "No metadata found"
+        }), 404
 
 
 # ── HTML Template ─────────────────────────────────────────────────────────────

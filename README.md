@@ -4,6 +4,20 @@ A self-hosted 4chan thread archiver with a web GUI. Monitors threads on a schedu
 
 This is slopcoded mostly to experiment; don't be surprised if any issues are ignored.
 
+## Features
+
+- 📦 **Thread Archiving**: Automatically scrapes and saves 4chan threads (posts, images, videos)
+- 🔄 **Scheduled Monitoring**: Configurable scrape intervals with automatic re-checking
+- 🌐 **Web GUI**: Clean, responsive Flask-based interface
+- 📖 **Archive Viewer**: Browse saved threads with full formatting and media
+- 🔗 **Thread Following**: Auto-detects successor threads via keyword matching
+- 🎨 **SD Metadata Detection**: Automatically detects and displays Stable Diffusion metadata from images
+  - Green badge overlay on images containing metadata
+  - Click-to-view modal with full parameter display
+  - Supports A1111, NovelAI, ComfyUI, and EXIF formats
+  - Cached results for fast loading
+- 🐳 **Docker-Ready**: Single-command deployment with docker-compose
+
 ## Requirements
 
 - Docker and Docker Compose
@@ -39,6 +53,10 @@ Supported URL formats:
 - `>>quotelinks` are rendered as links that jump to the quoted post within the page.
 - Images are shown as thumbnails and expand to full size on click.
 - Video files (.webm, .mp4) play inline.
+- **SD Metadata Detection**: Images containing Stable Diffusion metadata display a green "SD" badge in the top-left corner. Click the badge to view the metadata in a modal popup with copy-to-clipboard functionality.
+  - Supports: A1111, NovelAI, ComfyUI, and EXIF-based metadata
+  - Works with PNG, JPEG, WebP, and AVIF formats
+  - Metadata status is cached for performance
 
 ## Thread list
 
