@@ -37,7 +37,7 @@ import metadata_detector
 # ── Logging ───────────────────────────────────────────────────────────────────
 
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(message)s",
     datefmt="%H:%M:%S",
 )
@@ -792,9 +792,6 @@ def archive_view(board: str, thread_no: int):
 
         # Load metadata cache for this thread
         metadata_cache = metadata_detector.get_thread_metadata_status(thread_dir) if thread_dir else {}
-        logging.info(f"[Metadata] Thread {thread_no}: cache loaded with {len(metadata_cache)} entries")
-        with_metadata = sum(1 for v in metadata_cache.values() if v)
-        logging.info(f"[Metadata] Thread {thread_no}: {with_metadata} images have metadata")
 
         def render_post(p):
             no   = p.get("no", "?")
@@ -1217,41 +1214,18 @@ function escapeHtml(text) {{
 
 // Metadata filter
 const filterCheckbox = document.getElementById('filter-metadata');
-console.log('[Filter] Checkbox found:', filterCheckbox);
-
-// Debug: Check if badges exist at page load
-const allBadges = document.querySelectorAll('.metadata-badge');
-console.log('[Filter] Total metadata badges on page:', allBadges.length);
-if (allBadges.length > 0) {{
-  console.log('[Filter] First badge:', allBadges[0]);
-  console.log('[Filter] First badge parent:', allBadges[0].parentElement);
-}}
-
 if (filterCheckbox) {{
   filterCheckbox.addEventListener('change', () => {{
     const allPosts = document.querySelectorAll('.post');
     const filterActive = filterCheckbox.checked;
-    console.log('[Filter] Active:', filterActive, 'Total posts:', allPosts.length);
-
-    let hiddenCount = 0;
-    let withMetadata = 0;
-    allPosts.forEach((post, index) => {{
-      const badge = post.querySelector('.metadata-badge');
-      const hasMetadata = badge !== null;
-
-      if (index < 3) {{
-        console.log(`[Filter] Post ${{index}}: hasMetadata=${{hasMetadata}}, badge=`, badge);
-      }}
-
+    allPosts.forEach(post => {{
+      const hasMetadata = post.querySelector('.metadata-badge') !== null;
       if (filterActive && !hasMetadata) {{
         post.classList.add('filtered-hidden');
-        hiddenCount++;
       }} else {{
         post.classList.remove('filtered-hidden');
-        if (hasMetadata) withMetadata++;
       }}
     }});
-    console.log('[Filter] Posts with metadata:', withMetadata, 'Hidden:', hiddenCount, 'Visible:', allPosts.length - hiddenCount);
   }});
 }}
 </script>

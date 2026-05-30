@@ -137,20 +137,15 @@ def read_stealth_metadata(filepath: Path) -> Optional[str]:
         has_alpha = bool(np.any(arr_T[:, :, 3] < 255))
         sig_len = len('stealth_pnginfo') * 8  # 120 bits (15 chars)
 
-        import logging
-        logging.debug(f"[Stealth] {filepath.name}: {width}x{height} has_alpha={has_alpha}")
-
         # --- Try alpha channel (stealth_pnginfo / stealth_pngcomp) ---
         if has_alpha and len(a_bits) >= sig_len + 32:
             sig_bytes = _bits_to_bytes(a_bits[:sig_len])
             decoded_sig = sig_bytes.decode('latin1', errors='ignore')
-            logging.debug(f"[Stealth] {filepath.name}: alpha_sig={decoded_sig!r}")
             if decoded_sig in ('stealth_pnginfo', 'stealth_pngcomp'):
                 compressed = (decoded_sig == 'stealth_pngcomp')
                 param_len = _bits_to_int(a_bits[sig_len:sig_len + 32])
                 data_start = sig_len + 32
                 data_end = data_start + param_len
-                logging.debug(f"[Stealth] {filepath.name}: alpha param_len={param_len} a_bits={len(a_bits)} data_end={data_end}")
                 if param_len > 0 and len(a_bits) >= data_end:
                     byte_data = _bits_to_bytes(a_bits[data_start:data_end])
                     if compressed:
@@ -170,7 +165,6 @@ def read_stealth_metadata(filepath: Path) -> Optional[str]:
         if len(rgb_bits) >= sig_len + 32:
             sig_bytes = _bits_to_bytes(rgb_bits[:sig_len])
             decoded_sig = sig_bytes.decode('latin1', errors='ignore')
-            logging.debug(f"[Stealth] {filepath.name}: rgb_sig={decoded_sig!r}")
             if decoded_sig in ('stealth_rgbinfo', 'stealth_rgbcomp'):
                 compressed = (decoded_sig == 'stealth_rgbcomp')
                 # JS reads 33 bits, takes first 32 as length
@@ -224,7 +218,6 @@ def extract_metadata(filepath: Path) -> Optional[str]:
     Extract SD metadata from an image file.
     Returns the metadata string if found, None otherwise.
     """
-    import logging
     if not filepath.exists():
         return None
 
@@ -235,10 +228,6 @@ def extract_metadata(filepath: Path) -> Optional[str]:
         # PNG files - check tEXt chunks
         if ext == '.png':
             chunks = read_png_chunks(filepath)
-            if chunks:
-                logging.debug(f"[MetadataDetector] {filepath.name}: PNG chunks found: {list(chunks.keys())}")
-            else:
-                logging.debug(f"[MetadataDetector] {filepath.name}: no PNG text chunks")
 
             # NovelAI format
             if 'Comment' in chunks and 'Description' in chunks and 'Software' in chunks:
@@ -338,17 +327,11 @@ def get_thread_metadata_status(thread_dir: Path, force_rescan: bool = False) -> 
     Get metadata status for all images in a thread.
     Uses cache if available, otherwise scans and caches.
     """
-    import logging
-
     if not force_rescan:
         cache = load_metadata_cache(thread_dir)
         if cache:
-            logging.info(f"[MetadataDetector] Loaded cache for {thread_dir.name}: {len(cache)} entries")
             return cache
 
-    # Scan and cache
-    logging.info(f"[MetadataDetector] Scanning images in {thread_dir.name}...")
     results = scan_thread_images(thread_dir)
-    logging.info(f"[MetadataDetector] Scan complete: {sum(1 for v in results.values() if v)} of {len(results)} have metadata")
     save_metadata_cache(thread_dir, results)
     return results
