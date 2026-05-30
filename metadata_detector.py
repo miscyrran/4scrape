@@ -4,6 +4,7 @@ Detects and extracts Stable Diffusion metadata from images
 """
 import json
 import struct
+import zlib
 from pathlib import Path
 from typing import Optional, Dict, Any
 from PIL import Image
@@ -51,6 +52,111 @@ def read_png_chunks(filepath: Path) -> dict:
             return chunks
     except Exception as e:
         return {}
+
+
+def read_stealth_metadata(filepath: Path) -> Optional[str]:
+    """
+    Extract stealth metadata from LSB-encoded pixels.
+    Supports: stealth_pnginfo, stealth_pngcomp, stealth_rgbinfo, stealth_rgbcomp
+    """
+    try:
+        img = Image.open(filepath)
+
+        # Convert to RGB/RGBA if needed
+        if img.mode not in ('RGB', 'RGBA'):
+            img = img.convert('RGBA')
+
+        width, height = img.size
+        pixels = img.load()
+
+        # Try different stealth signatures
+        signatures = [
+            (b'stealth_pnginfo', False, 'RGB'),   # Uncompressed RGB
+            (b'stealth_pngcomp', True, 'RGB'),    # Compressed RGB
+            (b'stealth_rgbinfo', False, 'RGB'),   # Uncompressed RGB
+            (b'stealth_rgbcomp', True, 'RGB'),    # Compressed RGB
+        ]
+
+        for signature, compressed, mode in signatures:
+            try:
+                # Extract LSB data from pixels
+                binary_data = []
+                sig_len = len(signature) * 8
+
+                # Read signature first
+                bit_index = 0
+                for y in range(height):
+                    for x in range(width):
+                        if bit_index >= sig_len:
+                            break
+                        pixel = pixels[x, y]
+
+                        # Extract LSB from RGB channels
+                        for channel in range(3):
+                            if bit_index < sig_len:
+                                binary_data.append(pixel[channel] & 1)
+                                bit_index += 1
+                    if bit_index >= sig_len:
+                        break
+
+                # Convert bits to bytes and check signature
+                sig_bytes = bytes([sum([binary_data[i*8+j] << j for j in range(8)]) for i in range(len(signature))])
+                if sig_bytes != signature:
+                    continue
+
+                # Signature matched! Now read the data length (4 bytes = 32 bits)
+                binary_data = []
+                for y in range(height):
+                    for x in range(width):
+                        pixel = pixels[x, y]
+                        for channel in range(3):
+                            binary_data.append(pixel[channel] & 1)
+                            if len(binary_data) >= (sig_len + 32 + 8192*8):  # Sig + length + reasonable data
+                                break
+                        if len(binary_data) >= (sig_len + 32 + 8192*8):
+                            break
+                    if len(binary_data) >= (sig_len + 32 + 8192*8):
+                        break
+
+                # Extract length (4 bytes after signature)
+                length_bits = binary_data[sig_len:sig_len+32]
+                data_length = sum([length_bits[i] << i for i in range(32)])
+
+                # Sanity check on length
+                if data_length <= 0 or data_length > 10*1024*1024:  # Max 10MB
+                    continue
+
+                # Extract the actual data
+                data_start = sig_len + 32
+                data_end = data_start + (data_length * 8)
+
+                if data_end > len(binary_data):
+                    # Need to read more pixels
+                    continue
+
+                data_bits = binary_data[data_start:data_end]
+                data_bytes = bytes([sum([data_bits[i*8+j] << j for j in range(8)])
+                                   for i in range(data_length)])
+
+                # Decompress if needed
+                if compressed:
+                    try:
+                        data_bytes = zlib.decompress(data_bytes)
+                    except:
+                        continue
+
+                # Try to decode as UTF-8
+                metadata_text = data_bytes.decode('utf-8', errors='ignore')
+                if metadata_text and len(metadata_text.strip()) > 10:
+                    return metadata_text
+
+            except Exception:
+                continue
+
+        return None
+
+    except Exception:
+        return None
 
 
 def read_jpeg_exif(filepath: Path) -> Optional[str]:
@@ -121,6 +227,11 @@ def extract_metadata(filepath: Path) -> Optional[str]:
             exif_data = read_jpeg_exif(filepath)
             if exif_data:
                 return exif_data
+
+        # Check for stealth metadata (works on all image types)
+        stealth_data = read_stealth_metadata(filepath)
+        if stealth_data:
+            return stealth_data
 
     except Exception as e:
         pass
