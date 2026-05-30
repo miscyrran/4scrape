@@ -30,7 +30,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # ── App source ────────────────────────────────────────────────────────────────
-COPY 4chan_scraper.py web_gui.py ./
+COPY 4chan_scraper.py web_gui.py metadata_detector.py ./
 
 # ── Data volume ───────────────────────────────────────────────────────────────
 # Everything the app writes (archives, config, thread list) lives here.

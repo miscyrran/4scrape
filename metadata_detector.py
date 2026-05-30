@@ -1,0 +1,194 @@
+"""
+SD Metadata Detection Module for 4scrape
+Detects and extracts Stable Diffusion metadata from images
+"""
+import json
+import struct
+from pathlib import Path
+from typing import Optional, Dict, Any
+from PIL import Image
+import re
+
+
+def read_png_chunks(filepath: Path) -> dict:
+    """Read PNG text chunks containing metadata."""
+    try:
+        with open(filepath, 'rb') as f:
+            # Verify PNG signature
+            signature = f.read(8)
+            if signature != b'\x89PNG\r\n\x1a\n':
+                return {}
+
+            chunks = {}
+            while True:
+                # Read chunk length and type
+                chunk_data = f.read(8)
+                if len(chunk_data) < 8:
+                    break
+
+                length = struct.unpack('>I', chunk_data[:4])[0]
+                chunk_type = chunk_data[4:8].decode('latin1')
+
+                # Read chunk data and CRC
+                data = f.read(length)
+                crc = f.read(4)
+
+                if chunk_type == 'IEND':
+                    break
+
+                # Store tEXt and iTXt chunks
+                if chunk_type in ('tEXt', 'iTXt'):
+                    try:
+                        # Split on null byte to get keyword and text
+                        null_pos = data.find(b'\x00')
+                        if null_pos > 0:
+                            keyword = data[:null_pos].decode('latin1')
+                            text = data[null_pos+1:].decode('utf-8', errors='ignore')
+                            chunks[keyword] = text
+                    except:
+                        pass
+
+            return chunks
+    except Exception as e:
+        return {}
+
+
+def read_jpeg_exif(filepath: Path) -> Optional[str]:
+    """Read EXIF UserComment from JPEG/WebP."""
+    try:
+        from PIL.ExifTags import TAGS
+
+        img = Image.open(filepath)
+        exif = img.getexif()
+
+        if exif:
+            for tag_id, value in exif.items():
+                tag = TAGS.get(tag_id, tag_id)
+                if tag == 'UserComment':
+                    if isinstance(value, bytes):
+                        # Skip the encoding header (usually first 8 bytes)
+                        return value[8:].decode('utf-8', errors='ignore').strip('\x00')
+                    return str(value)
+        return None
+    except Exception:
+        return None
+
+
+def extract_metadata(filepath: Path) -> Optional[str]:
+    """
+    Extract SD metadata from an image file.
+    Returns the metadata string if found, None otherwise.
+    """
+    if not filepath.exists():
+        return None
+
+    ext = filepath.suffix.lower()
+    metadata = None
+
+    try:
+        # PNG files - check tEXt chunks
+        if ext == '.png':
+            chunks = read_png_chunks(filepath)
+
+            # NovelAI format
+            if 'Comment' in chunks and 'Description' in chunks and 'Software' in chunks:
+                try:
+                    comment_data = json.loads(chunks['Comment'])
+                    source = chunks.get('Source', 'Unknown')
+                    return f"Version: {source}\n\n{json.dumps(comment_data, indent=2)}"
+                except:
+                    pass
+
+            # A1111 format
+            if 'parameters' in chunks:
+                return chunks['parameters']
+
+            # ComfyUI format
+            if 'prompt' in chunks or 'workflow' in chunks:
+                parts = []
+                if 'prompt' in chunks:
+                    parts.append(f"Prompt:\n{chunks['prompt']}")
+                if 'workflow' in chunks:
+                    parts.append(f"Workflow:\n{chunks['workflow']}")
+                return "\n\n".join(parts)
+
+            # Dream format
+            if 'Dream' in chunks:
+                return chunks['Dream']
+
+        # JPEG/WebP - check EXIF
+        elif ext in ('.jpg', '.jpeg', '.webp', '.avif'):
+            exif_data = read_jpeg_exif(filepath)
+            if exif_data:
+                return exif_data
+
+    except Exception as e:
+        pass
+
+    return None
+
+
+def has_metadata(filepath: Path) -> bool:
+    """Quick check if an image has SD metadata."""
+    return extract_metadata(filepath) is not None
+
+
+def scan_thread_images(thread_dir: Path) -> Dict[str, bool]:
+    """
+    Scan all images in a thread directory for metadata.
+    Returns a dict mapping filename -> has_metadata bool.
+    """
+    results = {}
+    images_dir = thread_dir / "images"
+
+    if not images_dir.exists():
+        return results
+
+    for img_file in images_dir.iterdir():
+        if img_file.suffix.lower() in ('.png', '.jpg', '.jpeg', '.webp', '.avif'):
+            results[img_file.name] = has_metadata(img_file)
+
+    return results
+
+
+def get_metadata_cache_path(thread_dir: Path) -> Path:
+    """Get the path to the metadata cache file for a thread."""
+    return thread_dir / "metadata_cache.json"
+
+
+def load_metadata_cache(thread_dir: Path) -> Dict[str, bool]:
+    """Load cached metadata scan results."""
+    cache_file = get_metadata_cache_path(thread_dir)
+    if cache_file.exists():
+        try:
+            with open(cache_file, 'r') as f:
+                return json.load(f)
+        except:
+            pass
+    return {}
+
+
+def save_metadata_cache(thread_dir: Path, cache: Dict[str, bool]):
+    """Save metadata scan results to cache."""
+    cache_file = get_metadata_cache_path(thread_dir)
+    try:
+        with open(cache_file, 'w') as f:
+            json.dump(cache, f, indent=2)
+    except:
+        pass
+
+
+def get_thread_metadata_status(thread_dir: Path, force_rescan: bool = False) -> Dict[str, bool]:
+    """
+    Get metadata status for all images in a thread.
+    Uses cache if available, otherwise scans and caches.
+    """
+    if not force_rescan:
+        cache = load_metadata_cache(thread_dir)
+        if cache:
+            return cache
+
+    # Scan and cache
+    results = scan_thread_images(thread_dir)
+    save_metadata_cache(thread_dir, results)
+    return results
