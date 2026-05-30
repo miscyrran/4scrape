@@ -49,7 +49,7 @@ _SILENT_PATHS = {"/api/status", "/api/threads"}
 class _SilentPolling(logging.Filter):
     def filter(self, record):
         msg = record.getMessage()
-        return not any(f'"{p} ' in msg or f'"{p}"' in msg for p in _SILENT_PATHS)
+        return not any(p in msg for p in _SILENT_PATHS)
 
 logging.getLogger("werkzeug").addFilter(_SilentPolling())
 
