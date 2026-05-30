@@ -1215,6 +1215,15 @@ function escapeHtml(text) {{
 // Metadata filter
 const filterCheckbox = document.getElementById('filter-metadata');
 console.log('[Filter] Checkbox found:', filterCheckbox);
+
+// Debug: Check if badges exist at page load
+const allBadges = document.querySelectorAll('.metadata-badge');
+console.log('[Filter] Total metadata badges on page:', allBadges.length);
+if (allBadges.length > 0) {{
+  console.log('[Filter] First badge:', allBadges[0]);
+  console.log('[Filter] First badge parent:', allBadges[0].parentElement);
+}}
+
 if (filterCheckbox) {{
   filterCheckbox.addEventListener('change', () => {{
     const allPosts = document.querySelectorAll('.post');
@@ -1222,17 +1231,24 @@ if (filterCheckbox) {{
     console.log('[Filter] Active:', filterActive, 'Total posts:', allPosts.length);
 
     let hiddenCount = 0;
-    allPosts.forEach(post => {{
-      const hasMetadata = post.querySelector('.metadata-badge') !== null;
+    let withMetadata = 0;
+    allPosts.forEach((post, index) => {{
+      const badge = post.querySelector('.metadata-badge');
+      const hasMetadata = badge !== null;
+
+      if (index < 3) {{
+        console.log(`[Filter] Post ${{index}}: hasMetadata=${{hasMetadata}}, badge=`, badge);
+      }}
 
       if (filterActive && !hasMetadata) {{
         post.classList.add('filtered-hidden');
         hiddenCount++;
       }} else {{
         post.classList.remove('filtered-hidden');
+        if (hasMetadata) withMetadata++;
       }}
     }});
-    console.log('[Filter] Hidden:', hiddenCount, 'Visible:', allPosts.length - hiddenCount);
+    console.log('[Filter] Posts with metadata:', withMetadata, 'Hidden:', hiddenCount, 'Visible:', allPosts.length - hiddenCount);
   }});
 }}
 </script>
