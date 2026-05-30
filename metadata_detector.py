@@ -37,15 +37,48 @@ def read_png_chunks(filepath: Path) -> dict:
                 if chunk_type == 'IEND':
                     break
 
-                # Store tEXt and iTXt chunks
-                if chunk_type in ('tEXt', 'iTXt'):
+                # Store text chunks
+                if chunk_type == 'tEXt':
                     try:
-                        # Split on null byte to get keyword and text
                         null_pos = data.find(b'\x00')
                         if null_pos > 0:
                             keyword = data[:null_pos].decode('latin1')
                             text = data[null_pos+1:].decode('utf-8', errors='ignore')
                             chunks[keyword] = text
+                    except:
+                        pass
+
+                elif chunk_type == 'zTXt':
+                    try:
+                        null_pos = data.find(b'\x00')
+                        if null_pos > 0:
+                            keyword = data[:null_pos].decode('latin1')
+                            # 1 byte compression method after null, then compressed data
+                            compressed_data = data[null_pos+2:]
+                            text = zlib.decompress(compressed_data).decode('utf-8', errors='ignore')
+                            chunks[keyword] = text
+                    except:
+                        pass
+
+                elif chunk_type == 'iTXt':
+                    try:
+                        null_pos = data.find(b'\x00')
+                        if null_pos > 0:
+                            keyword = data[:null_pos].decode('latin1')
+                            # compression_flag, compression_method, language_tag\0, translated_keyword\0, text
+                            rest = data[null_pos+1:]
+                            compression_flag = rest[0]
+                            compression_method = rest[1]
+                            rest = rest[2:]
+                            # skip language tag
+                            lang_end = rest.find(b'\x00')
+                            rest = rest[lang_end+1:]
+                            # skip translated keyword
+                            trans_end = rest.find(b'\x00')
+                            text_data = rest[trans_end+1:]
+                            if compression_flag == 1:
+                                text_data = zlib.decompress(text_data)
+                            chunks[keyword] = text_data.decode('utf-8', errors='ignore')
                     except:
                         pass
 
@@ -170,6 +203,7 @@ def extract_metadata(filepath: Path) -> Optional[str]:
     Extract SD metadata from an image file.
     Returns the metadata string if found, None otherwise.
     """
+    import logging
     if not filepath.exists():
         return None
 
@@ -180,6 +214,10 @@ def extract_metadata(filepath: Path) -> Optional[str]:
         # PNG files - check tEXt chunks
         if ext == '.png':
             chunks = read_png_chunks(filepath)
+            if chunks:
+                logging.debug(f"[MetadataDetector] {filepath.name}: PNG chunks found: {list(chunks.keys())}")
+            else:
+                logging.debug(f"[MetadataDetector] {filepath.name}: no PNG text chunks")
 
             # NovelAI format
             if 'Comment' in chunks and 'Description' in chunks and 'Software' in chunks:
