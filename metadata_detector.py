@@ -149,13 +149,27 @@ def read_stealth_metadata(filepath: Path) -> Optional[str]:
                 param_len = _bits_to_int(a_bits[sig_len:sig_len + 32])
                 data_start = sig_len + 32
                 data_end = data_start + param_len
+                logging.debug(f"[Stealth] {filepath.name}: alpha param_len={param_len} a_bits={len(a_bits)} data_end={data_end}")
                 if param_len > 0 and len(a_bits) >= data_end:
                     byte_data = _bits_to_bytes(a_bits[data_start:data_end])
-                    if compressed:
-                        byte_data = zlib.decompress(byte_data)
-                    decoded = byte_data.decode('utf-8', errors='ignore')
-                    if decoded and len(decoded.strip()) > 10:
-                        return decoded
+                    try:
+                        if compressed:
+                            byte_data = zlib.decompress(byte_data)
+                        decoded = byte_data.decode('utf-8', errors='ignore')
+                        if decoded and len(decoded.strip()) > 10:
+                            return decoded
+                        else:
+                            logging.debug(f"[Stealth] {filepath.name}: decoded too short: {len(decoded.strip())}")
+                    except Exception as e:
+                        logging.debug(f"[Stealth] {filepath.name}: decompress/decode error: {e}")
+                        # Try raw deflate (no zlib header)
+                        try:
+                            raw = zlib.decompress(byte_data, -15)
+                            decoded = raw.decode('utf-8', errors='ignore')
+                            if decoded and len(decoded.strip()) > 10:
+                                return decoded
+                        except Exception as e2:
+                            logging.debug(f"[Stealth] {filepath.name}: raw deflate also failed: {e2}")
 
         # --- Try RGB channels (stealth_rgbinfo / stealth_rgbcomp) ---
         if len(rgb_bits) >= sig_len + 32:
