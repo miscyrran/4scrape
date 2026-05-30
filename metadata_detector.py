@@ -57,101 +57,115 @@ def read_png_chunks(filepath: Path) -> dict:
 def read_stealth_metadata(filepath: Path) -> Optional[str]:
     """
     Extract stealth metadata from LSB-encoded pixels.
-    Supports: stealth_pnginfo, stealth_pngcomp, stealth_rgbinfo, stealth_rgbcomp
+    Matches the JavaScript implementation exactly:
+    - Column-major iteration (x outer, y inner)
+    - Alpha channel for stealth_pnginfo/comp, RGB for stealth_rgbinfo/comp
+    - MSB-first bit strings, paramLen is in bits
     """
     try:
         img = Image.open(filepath)
+        img_rgba = img.convert('RGBA')
+        width, height = img_rgba.size
+        pixels = list(img_rgba.getdata())  # flat list of (R,G,B,A) tuples
 
-        # Convert to RGB/RGBA if needed
-        if img.mode not in ('RGB', 'RGBA'):
-            img = img.convert('RGBA')
+        # Detect if image has non-trivial alpha
+        has_alpha = any(pixels[i][3] < 255 for i in range(min(len(pixels), 1000)))
 
-        width, height = img.size
-        pixels = img.load()
+        sig_length_bits = len('stealth_pnginfo') * 8
 
-        # Try different stealth signatures
-        signatures = [
-            (b'stealth_pnginfo', False, 'RGB'),   # Uncompressed RGB
-            (b'stealth_pngcomp', True, 'RGB'),    # Compressed RGB
-            (b'stealth_rgbinfo', False, 'RGB'),   # Uncompressed RGB
-            (b'stealth_rgbcomp', True, 'RGB'),    # Compressed RGB
-        ]
+        mode = None
+        compressed = False
+        buffer_a = ''
+        buffer_rgb = ''
+        index_a = 0
+        index_rgb = 0
+        sig_confirmed = False
+        confirming_signature = True
+        reading_param_len = False
+        reading_param = False
+        read_end = False
+        param_len = 0
+        binary_data = ''
 
-        for signature, compressed, mode in signatures:
-            try:
-                # Extract LSB data from pixels
-                binary_data = []
-                sig_len = len(signature) * 8
+        for x in range(width):
+            for y in range(height):
+                r, g, b, a = pixels[y * width + x]
 
-                # Read signature first
-                bit_index = 0
-                for y in range(height):
-                    for x in range(width):
-                        if bit_index >= sig_len:
+                if has_alpha:
+                    buffer_a += str(a & 1)
+                    index_a += 1
+
+                buffer_rgb += str(r & 1)
+                buffer_rgb += str(g & 1)
+                buffer_rgb += str(b & 1)
+                index_rgb += 3
+
+                if confirming_signature:
+                    if has_alpha and index_a == sig_length_bits:
+                        decoded_sig = bytes([int(buffer_a[i:i+8], 2) for i in range(0, len(buffer_a), 8)]).decode('latin1')
+                        if decoded_sig in ('stealth_pnginfo', 'stealth_pngcomp'):
+                            confirming_signature = False
+                            sig_confirmed = True
+                            reading_param_len = True
+                            mode = 'alpha'
+                            compressed = (decoded_sig == 'stealth_pngcomp')
+                            buffer_a = ''
+                            index_a = 0
+                        else:
+                            read_end = True
                             break
-                        pixel = pixels[x, y]
+                    elif index_rgb == sig_length_bits:
+                        decoded_sig = bytes([int(buffer_rgb[i:i+8], 2) for i in range(0, len(buffer_rgb), 8)]).decode('latin1')
+                        if decoded_sig in ('stealth_rgbinfo', 'stealth_rgbcomp'):
+                            confirming_signature = False
+                            sig_confirmed = True
+                            reading_param_len = True
+                            mode = 'rgb'
+                            compressed = (decoded_sig == 'stealth_rgbcomp')
+                            buffer_rgb = ''
+                            index_rgb = 0
 
-                        # Extract LSB from RGB channels
-                        for channel in range(3):
-                            if bit_index < sig_len:
-                                binary_data.append(pixel[channel] & 1)
-                                bit_index += 1
-                    if bit_index >= sig_len:
+                elif reading_param_len:
+                    if mode == 'alpha' and index_a == 32:
+                        param_len = int(buffer_a, 2)
+                        reading_param_len = False
+                        reading_param = True
+                        buffer_a = ''
+                        index_a = 0
+                    elif mode != 'alpha' and index_rgb == 33:
+                        param_len = int(buffer_rgb[:-1], 2)
+                        reading_param_len = False
+                        reading_param = True
+                        buffer_rgb = buffer_rgb[-1]
+                        index_rgb = 1
+
+                elif reading_param:
+                    if mode == 'alpha' and index_a == param_len:
+                        binary_data = buffer_a
+                        read_end = True
                         break
-
-                # Convert bits to bytes and check signature
-                sig_bytes = bytes([sum([binary_data[i*8+j] << j for j in range(8)]) for i in range(len(signature))])
-                if sig_bytes != signature:
-                    continue
-
-                # Signature matched! Now read the data length (4 bytes = 32 bits)
-                binary_data = []
-                for y in range(height):
-                    for x in range(width):
-                        pixel = pixels[x, y]
-                        for channel in range(3):
-                            binary_data.append(pixel[channel] & 1)
-                            if len(binary_data) >= (sig_len + 32 + 8192*8):  # Sig + length + reasonable data
-                                break
-                        if len(binary_data) >= (sig_len + 32 + 8192*8):
-                            break
-                    if len(binary_data) >= (sig_len + 32 + 8192*8):
+                    elif mode != 'alpha' and index_rgb >= param_len:
+                        diff = param_len - index_rgb
+                        if diff < 0:
+                            buffer_rgb = buffer_rgb[:diff]
+                        binary_data = buffer_rgb
+                        read_end = True
                         break
+                else:
+                    read_end = True
+                    break
 
-                # Extract length (4 bytes after signature)
-                length_bits = binary_data[sig_len:sig_len+32]
-                data_length = sum([length_bits[i] << i for i in range(32)])
+            if read_end:
+                break
 
-                # Sanity check on length
-                if data_length <= 0 or data_length > 10*1024*1024:  # Max 10MB
-                    continue
-
-                # Extract the actual data
-                data_start = sig_len + 32
-                data_end = data_start + (data_length * 8)
-
-                if data_end > len(binary_data):
-                    # Need to read more pixels
-                    continue
-
-                data_bits = binary_data[data_start:data_end]
-                data_bytes = bytes([sum([data_bits[i*8+j] << j for j in range(8)])
-                                   for i in range(data_length)])
-
-                # Decompress if needed
-                if compressed:
-                    try:
-                        data_bytes = zlib.decompress(data_bytes)
-                    except:
-                        continue
-
-                # Try to decode as UTF-8
-                metadata_text = data_bytes.decode('utf-8', errors='ignore')
-                if metadata_text and len(metadata_text.strip()) > 10:
-                    return metadata_text
-
-            except Exception:
-                continue
+        if sig_confirmed and binary_data:
+            byte_data = bytes([int(binary_data[i:i+8], 2) for i in range(0, len(binary_data) - len(binary_data) % 8, 8)])
+            if compressed:
+                decoded = zlib.decompress(byte_data).decode('utf-8', errors='ignore')
+            else:
+                decoded = byte_data.decode('utf-8', errors='ignore')
+            if decoded and len(decoded.strip()) > 10:
+                return decoded
 
         return None
 
