@@ -1151,20 +1151,43 @@ function showMetadataModal(filename, metadata) {{
     if (e.target === modal) modal.remove();
   }});
 
-  // Copy button
+  // Copy button with fallback for iOS/HTTP
   modal.querySelector('.metadata-copy').addEventListener('click', async () => {{
-    try {{
-      await navigator.clipboard.writeText(metadata);
-      const btn = modal.querySelector('.metadata-copy');
-      const originalText = btn.textContent;
+    const btn = modal.querySelector('.metadata-copy');
+    const originalText = btn.textContent;
+    let success = false;
+
+    // Try modern clipboard API first (requires HTTPS on iOS)
+    if (navigator.clipboard && navigator.clipboard.writeText) {{
+      try {{
+        await navigator.clipboard.writeText(metadata);
+        success = true;
+      }} catch (err) {{
+        // Fall through to fallback method
+      }}
+    }}
+
+    // Fallback for iOS/HTTP: use textarea selection
+    if (!success) {{
+      try {{
+        const textarea = modal.querySelector('.metadata-text');
+        textarea.select();
+        textarea.setSelectionRange(0, 99999); // For mobile
+        document.execCommand('copy');
+        success = true;
+      }} catch (err) {{
+        alert('Failed to copy to clipboard. Please copy manually.');
+        return;
+      }}
+    }}
+
+    if (success) {{
       btn.textContent = 'Copied!';
       btn.style.background = '#00ff00';
       setTimeout(() => {{
         btn.textContent = originalText;
         btn.style.background = '';
       }}, 2000);
-    }} catch (err) {{
-      alert('Failed to copy to clipboard');
     }}
   }});
 }}
