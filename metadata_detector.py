@@ -54,118 +54,89 @@ def read_png_chunks(filepath: Path) -> dict:
         return {}
 
 
+def _bits_to_int(bits) -> int:
+    """Convert MSB-first bit array to integer."""
+    result = 0
+    for b in bits:
+        result = (result << 1) | int(b)
+    return result
+
+
+def _bits_to_bytes(bits) -> bytes:
+    """Convert MSB-first bit array to bytes (truncates to multiple of 8)."""
+    import numpy as np
+    n = (len(bits) // 8) * 8
+    arr = np.array(bits[:n], dtype=np.uint8)
+    return np.packbits(arr).tobytes()
+
+
 def read_stealth_metadata(filepath: Path) -> Optional[str]:
     """
-    Extract stealth metadata from LSB-encoded pixels.
-    Matches the JavaScript implementation exactly:
-    - Column-major iteration (x outer, y inner)
-    - Alpha channel for stealth_pnginfo/comp, RGB for stealth_rgbinfo/comp
-    - MSB-first bit strings, paramLen is in bits
+    Extract stealth metadata from LSB-encoded pixels using numpy for speed.
+    Matches JS implementation: column-major (x outer, y inner), MSB-first bits,
+    alpha channel for stealth_pnginfo/comp, RGB for stealth_rgbinfo/comp.
+    paramLen is in bits.
     """
     try:
+        import numpy as np
+
         img = Image.open(filepath)
-        img_rgba = img.convert('RGBA')
-        width, height = img_rgba.size
-        pixels = list(img_rgba.getdata())  # flat list of (R,G,B,A) tuples
+        arr = np.array(img.convert('RGBA'))  # (height, width, 4)
+        height, width = arr.shape[:2]
 
-        # Detect if image has non-trivial alpha
-        has_alpha = any(pixels[i][3] < 255 for i in range(min(len(pixels), 1000)))
+        # Column-major order: transpose to (width, height, channels) then flatten
+        arr_T = arr.transpose(1, 0, 2)  # (width, height, 4)
 
-        sig_length_bits = len('stealth_pnginfo') * 8
+        # Extract LSBs for all channels in column-major order
+        a_bits = (arr_T[:, :, 3] & 1).flatten()  # alpha LSBs
+        r_bits = (arr_T[:, :, 0] & 1).flatten()
+        g_bits = (arr_T[:, :, 1] & 1).flatten()
+        b_bits = (arr_T[:, :, 2] & 1).flatten()
 
-        mode = None
-        compressed = False
-        buffer_a = ''
-        buffer_rgb = ''
-        index_a = 0
-        index_rgb = 0
-        sig_confirmed = False
-        confirming_signature = True
-        reading_param_len = False
-        reading_param = False
-        read_end = False
-        param_len = 0
-        binary_data = ''
+        # Interleaved RGB bits: r0,g0,b0, r1,g1,b1, ...
+        n_pixels = width * height
+        rgb_bits = np.empty(n_pixels * 3, dtype=np.uint8)
+        rgb_bits[0::3] = r_bits
+        rgb_bits[1::3] = g_bits
+        rgb_bits[2::3] = b_bits
 
-        for x in range(width):
-            for y in range(height):
-                r, g, b, a = pixels[y * width + x]
+        has_alpha = bool(np.any(arr_T[:, :, 3] < 255))
+        sig_len = len('stealth_pnginfo') * 8  # 112 bits
 
-                if has_alpha:
-                    buffer_a += str(a & 1)
-                    index_a += 1
+        # --- Try alpha channel (stealth_pnginfo / stealth_pngcomp) ---
+        if has_alpha and len(a_bits) >= sig_len + 32:
+            sig_bytes = _bits_to_bytes(a_bits[:sig_len])
+            decoded_sig = sig_bytes.decode('latin1', errors='ignore')
+            if decoded_sig in ('stealth_pnginfo', 'stealth_pngcomp'):
+                compressed = (decoded_sig == 'stealth_pngcomp')
+                param_len = _bits_to_int(a_bits[sig_len:sig_len + 32])
+                data_start = sig_len + 32
+                data_end = data_start + param_len
+                if param_len > 0 and len(a_bits) >= data_end:
+                    byte_data = _bits_to_bytes(a_bits[data_start:data_end])
+                    if compressed:
+                        byte_data = zlib.decompress(byte_data)
+                    decoded = byte_data.decode('utf-8', errors='ignore')
+                    if decoded and len(decoded.strip()) > 10:
+                        return decoded
 
-                buffer_rgb += str(r & 1)
-                buffer_rgb += str(g & 1)
-                buffer_rgb += str(b & 1)
-                index_rgb += 3
-
-                if confirming_signature:
-                    if has_alpha and index_a == sig_length_bits:
-                        decoded_sig = bytes([int(buffer_a[i:i+8], 2) for i in range(0, len(buffer_a), 8)]).decode('latin1')
-                        if decoded_sig in ('stealth_pnginfo', 'stealth_pngcomp'):
-                            confirming_signature = False
-                            sig_confirmed = True
-                            reading_param_len = True
-                            mode = 'alpha'
-                            compressed = (decoded_sig == 'stealth_pngcomp')
-                            buffer_a = ''
-                            index_a = 0
-                        else:
-                            read_end = True
-                            break
-                    elif index_rgb == sig_length_bits:
-                        decoded_sig = bytes([int(buffer_rgb[i:i+8], 2) for i in range(0, len(buffer_rgb), 8)]).decode('latin1')
-                        if decoded_sig in ('stealth_rgbinfo', 'stealth_rgbcomp'):
-                            confirming_signature = False
-                            sig_confirmed = True
-                            reading_param_len = True
-                            mode = 'rgb'
-                            compressed = (decoded_sig == 'stealth_rgbcomp')
-                            buffer_rgb = ''
-                            index_rgb = 0
-
-                elif reading_param_len:
-                    if mode == 'alpha' and index_a == 32:
-                        param_len = int(buffer_a, 2)
-                        reading_param_len = False
-                        reading_param = True
-                        buffer_a = ''
-                        index_a = 0
-                    elif mode != 'alpha' and index_rgb == 33:
-                        param_len = int(buffer_rgb[:-1], 2)
-                        reading_param_len = False
-                        reading_param = True
-                        buffer_rgb = buffer_rgb[-1]
-                        index_rgb = 1
-
-                elif reading_param:
-                    if mode == 'alpha' and index_a == param_len:
-                        binary_data = buffer_a
-                        read_end = True
-                        break
-                    elif mode != 'alpha' and index_rgb >= param_len:
-                        diff = param_len - index_rgb
-                        if diff < 0:
-                            buffer_rgb = buffer_rgb[:diff]
-                        binary_data = buffer_rgb
-                        read_end = True
-                        break
-                else:
-                    read_end = True
-                    break
-
-            if read_end:
-                break
-
-        if sig_confirmed and binary_data:
-            byte_data = bytes([int(binary_data[i:i+8], 2) for i in range(0, len(binary_data) - len(binary_data) % 8, 8)])
-            if compressed:
-                decoded = zlib.decompress(byte_data).decode('utf-8', errors='ignore')
-            else:
-                decoded = byte_data.decode('utf-8', errors='ignore')
-            if decoded and len(decoded.strip()) > 10:
-                return decoded
+        # --- Try RGB channels (stealth_rgbinfo / stealth_rgbcomp) ---
+        if len(rgb_bits) >= sig_len + 32:
+            sig_bytes = _bits_to_bytes(rgb_bits[:sig_len])
+            decoded_sig = sig_bytes.decode('latin1', errors='ignore')
+            if decoded_sig in ('stealth_rgbinfo', 'stealth_rgbcomp'):
+                compressed = (decoded_sig == 'stealth_rgbcomp')
+                # JS reads 33 bits, takes first 32 as length
+                param_len = _bits_to_int(rgb_bits[sig_len:sig_len + 32])
+                data_start = sig_len + 32  # 33rd bit onwards is data
+                data_end = data_start + param_len
+                if param_len > 0 and len(rgb_bits) >= data_end:
+                    byte_data = _bits_to_bytes(rgb_bits[data_start:data_end])
+                    if compressed:
+                        byte_data = zlib.decompress(byte_data)
+                    decoded = byte_data.decode('utf-8', errors='ignore')
+                    if decoded and len(decoded.strip()) > 10:
+                        return decoded
 
         return None
 
