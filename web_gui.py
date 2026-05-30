@@ -934,7 +934,7 @@ main{{max-width:860px;margin:0 auto;padding:1.4rem 1.2rem}}
 .post-sub{{font-weight:700;font-size:.93rem;color:var(--text);margin-bottom:.45rem}}
 .post-body{{white-space:pre-wrap;word-break:break-word;font-family:inherit;
              font-size:.87rem;color:var(--text)}}
-.post-img{{margin:.5rem 0}}
+.post-img{{margin:.5rem 0;position:relative}}
 .post-img img{{max-width:min(100%,400px);max-height:320px;
                 object-fit:contain;border-radius:5px;
                 border:1px solid var(--border);cursor:pointer}}
@@ -960,21 +960,19 @@ main{{max-width:860px;margin:0 auto;padding:1.4rem 1.2rem}}
   background:linear-gradient(135deg, #00ff88 0%, #00cc66 100%);
   color:#000;
   font-weight:700;
-  font-size:11px;
-  padding:4px 8px;
-  border-radius:4px;
+  font-size:13px;
+  padding:6px 10px;
+  border-radius:5px;
   cursor:pointer;
-  z-index:10;
-  box-shadow:0 2px 6px rgba(0,255,136,0.4);
+  z-index:100;
+  box-shadow:0 2px 8px rgba(0,255,136,0.5);
   transition:all 0.2s;
   user-select:none;
+  pointer-events:auto;
 }}
 .metadata-badge:hover{{
   transform:scale(1.1);
   box-shadow:0 4px 12px rgba(0,255,136,0.6);
-}}
-.post-img{{
-  position:relative;
 }}
 #metadata-modal{{
   position:fixed;
