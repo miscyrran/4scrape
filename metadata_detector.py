@@ -152,6 +152,7 @@ def read_stealth_metadata(filepath: Path) -> Optional[str]:
                 logging.debug(f"[Stealth] {filepath.name}: alpha param_len={param_len} a_bits={len(a_bits)} data_end={data_end}")
                 if param_len > 0 and len(a_bits) >= data_end:
                     byte_data = _bits_to_bytes(a_bits[data_start:data_end])
+                    logging.debug(f"[Stealth] {filepath.name}: first 8 bytes hex: {byte_data[:8].hex()}")
                     try:
                         if compressed:
                             byte_data = zlib.decompress(byte_data)
@@ -162,14 +163,20 @@ def read_stealth_metadata(filepath: Path) -> Optional[str]:
                             logging.debug(f"[Stealth] {filepath.name}: decoded too short: {len(decoded.strip())}")
                     except Exception as e:
                         logging.debug(f"[Stealth] {filepath.name}: decompress/decode error: {e}")
-                        # Try raw deflate (no zlib header)
+                        # Try byte-reversed bit order
                         try:
-                            raw = zlib.decompress(byte_data, -15)
+                            raw_bits = a_bits[data_start:data_end]
+                            # Reverse bit order within each byte
+                            n8 = (len(raw_bits) // 8) * 8
+                            raw_bits = raw_bits[:n8].reshape(-1, 8)[:, ::-1].flatten()
+                            rev_bytes = np.packbits(raw_bits).tobytes()
+                            logging.debug(f"[Stealth] {filepath.name}: bit-reversed first 8 bytes: {rev_bytes[:8].hex()}")
+                            raw = zlib.decompress(rev_bytes)
                             decoded = raw.decode('utf-8', errors='ignore')
                             if decoded and len(decoded.strip()) > 10:
                                 return decoded
                         except Exception as e2:
-                            logging.debug(f"[Stealth] {filepath.name}: raw deflate also failed: {e2}")
+                            logging.debug(f"[Stealth] {filepath.name}: bit-reversed also failed: {e2}")
 
         # --- Try RGB channels (stealth_rgbinfo / stealth_rgbcomp) ---
         if len(rgb_bits) >= sig_len + 32:
