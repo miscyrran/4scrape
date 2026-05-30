@@ -1214,20 +1214,25 @@ function escapeHtml(text) {{
 
 // Metadata filter
 const filterCheckbox = document.getElementById('filter-metadata');
+console.log('[Filter] Checkbox found:', filterCheckbox);
 if (filterCheckbox) {{
   filterCheckbox.addEventListener('change', () => {{
     const allPosts = document.querySelectorAll('.post');
     const filterActive = filterCheckbox.checked;
+    console.log('[Filter] Active:', filterActive, 'Total posts:', allPosts.length);
 
+    let hiddenCount = 0;
     allPosts.forEach(post => {{
       const hasMetadata = post.querySelector('.metadata-badge') !== null;
 
       if (filterActive && !hasMetadata) {{
         post.classList.add('filtered-hidden');
+        hiddenCount++;
       }} else {{
         post.classList.remove('filtered-hidden');
       }}
     }});
+    console.log('[Filter] Hidden:', hiddenCount, 'Visible:', allPosts.length - hiddenCount);
   }});
 }}
 </script>
