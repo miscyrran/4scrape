@@ -19,11 +19,6 @@
 
 FROM python:3.11-slim
 
-# ── System deps (curl for health-check) ──────────────────────────────────────
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl \
-    && rm -rf /var/lib/apt/lists/*
-
 # ── Python deps ───────────────────────────────────────────────────────────────
 WORKDIR /app
 COPY requirements.txt .
@@ -48,10 +43,6 @@ ENV CONFIG_PATH=/data/config.json \
     PORT=5000
 
 EXPOSE 5000
-
-# ── Health check ──────────────────────────────────────────────────────────────
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -sf http://localhost:${PORT}/ || exit 1
 
 # ── Entrypoint ────────────────────────────────────────────────────────────────
 # web_gui.py includes the background scraper loop, so one process handles both.
