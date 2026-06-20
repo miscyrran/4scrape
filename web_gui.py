@@ -2137,7 +2137,7 @@ async function loadConfig() {
     document.getElementById('cfg-output').value    = cfg.output_dir ?? '4chan_archive';
     document.getElementById('cfg-images').checked  = cfg.save_images !== false;
     document.getElementById('cfg-json').checked    = cfg.save_raw_json !== false;
-    document.getElementById('cfg-external').checked = cfg.save_external_files === true;
+    document.getElementById('cfg-external').checked = !!(cfg.save_external_files);
     const extDomains = Array.isArray(cfg.external_domains) ? cfg.external_domains : ['catbox.moe', 'files.catbox.moe'];
     document.getElementById('cfg-external-domains').value = extDomains.join(', ');
     document.getElementById('cfg-max-external').value = cfg.max_external_files_per_thread ?? 100;
