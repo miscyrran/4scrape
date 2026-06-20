@@ -60,6 +60,15 @@ DEFAULT_CONFIG = {
     # Useful to avoid accidentally downloading massive threads.
     "max_images_per_thread": 500,
 
+    # Download files from external links (catbox, litterbox, etc.)?
+    "save_external_files": False,
+
+    # Domains to scan for external file links
+    "external_domains": ["catbox.moe", "files.catbox.moe"],
+
+    # Max external files to download per thread (0 = unlimited)
+    "max_external_files_per_thread": 100,
+
     # Seconds to wait between API calls (4chan asks for >= 1 s)
     "request_delay": 1.0,
 
@@ -137,6 +146,37 @@ def clean_html(text: str) -> str:
     # Decode HTML entities (&amp; &gt; &#039; etc.)
     text = html.unescape(text)
     return text.strip()
+
+
+def extract_external_links(post_html: str, allowed_domains: list) -> list:
+    """
+    Extract external file URLs from post HTML.
+
+    Args:
+        post_html: Raw HTML from post["com"]
+        allowed_domains: List of domain names to match
+
+    Returns:
+        List of URLs found
+    """
+    if not post_html or not allowed_domains:
+        return []
+
+    links = []
+    for domain in allowed_domains:
+        # Escape domain for regex
+        domain_pattern = re.escape(domain)
+        # Match protocol-relative and explicit https
+        # Example: href="https://files.catbox.moe/abc123.png"
+        pattern = rf'href="((?:https?:)?//(?:[^/]*\.)?{domain_pattern}/[^"]+)"'
+        matches = re.findall(pattern, post_html, re.IGNORECASE)
+        for match in matches:
+            # Normalize protocol-relative URLs
+            if match.startswith('//'):
+                match = 'https:' + match
+            links.append(match)
+
+    return links
 
 
 def slugify(text: str, maxlen: int = 60) -> str:
@@ -304,6 +344,49 @@ def scrape_thread(board: str, thread_no: int, cfg: dict,
                 dest = img_dir / dest_name
                 img_url = f"{IMG_BASE}/{board}/{tim}{ext}"
                 img_get(img_url, dest, cfg["request_delay"])
+
+    # ---- Download external files ----
+    if cfg.get("save_external_files", False):
+        external_domains = cfg.get("external_domains", [])
+        max_external = cfg.get("max_external_files_per_thread", 0)
+
+        if external_domains:
+            # Extract all external links from posts
+            external_links = []
+            for post in posts:
+                if post.get("com"):  # Post has text content
+                    links = extract_external_links(post["com"], external_domains)
+                    for link in links:
+                        external_links.append((link, post["no"]))
+
+            # Apply limit
+            if max_external > 0:
+                external_links = external_links[:max_external]
+
+            # Download each external file
+            if external_links:
+                img_dir = thread_dir / "images"
+                img_dir.mkdir(parents=True, exist_ok=True)
+
+                # Track URLs we've already seen to avoid duplicates
+                seen_urls = set()
+                for idx, (url, post_no) in enumerate(external_links, start=1):
+                    if url in seen_urls:
+                        continue
+                    seen_urls.add(url)
+
+                    # Extract filename from URL
+                    filename = url.split("/")[-1].split("?")[0]
+                    if not filename:
+                        filename = f"download{idx}"
+
+                    # Prepend post number and index
+                    dest_name = f"{post_no}_{idx}_{filename}"
+                    # Sanitize filename
+                    dest_name = re.sub(r'[<>:"/\\|?*]', "_", dest_name)
+                    dest_path = img_dir / dest_name
+
+                    img_get(url, dest_path, cfg["request_delay"])
 
     # Update state
     board_state[str(thread_no)] = posts[-1]["no"]
