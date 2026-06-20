@@ -179,14 +179,28 @@ def _extract_external_links(post_html: str, allowed_domains: list) -> list:
     for domain in allowed_domains:
         # Escape domain for regex
         domain_pattern = re.escape(domain)
-        # Match protocol-relative and explicit https
+
+        # Pattern 1: Match URLs in href attributes
         # Example: href="https://files.catbox.moe/abc123.png"
-        pattern = rf'href="((?:https?:)?//(?:[^/]*\.)?{domain_pattern}/[^"]+)"'
-        matches = re.findall(pattern, post_html, re.IGNORECASE)
-        for match in matches:
-            # Normalize protocol-relative URLs
+        pattern1 = rf'href="((?:https?:)?//(?:[^/]*\.)?{domain_pattern}/[^"]+)"'
+
+        # Pattern 2: Match plain text URLs (not in attributes)
+        # Example: https://files.catbox.moe/abc123.png or catbox.moe/abc123.png
+        # Match until whitespace, <, or quote
+        pattern2 = rf'(?:https?:)?//(?:[^/]*\.)?{domain_pattern}/[^\s<>"]+(?:\?[^\s<>"]*)?'
+
+        # Find href links
+        for match in re.findall(pattern1, post_html, re.IGNORECASE):
             if match.startswith('//'):
                 match = 'https:' + match
+            links.append(match)
+
+        # Find plain text links
+        for match in re.findall(pattern2, post_html, re.IGNORECASE):
+            if match.startswith('//'):
+                match = 'https:' + match
+            elif not match.startswith('http'):
+                match = 'https://' + match
             links.append(match)
 
     return links
