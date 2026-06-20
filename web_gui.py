@@ -74,6 +74,9 @@ DEFAULT_CONFIG = {
     "save_raw_json":         True,
     "request_delay":         1.0,
     "log_level":             "INFO",
+    "save_external_files":   False,
+    "external_domains":      ["catbox.moe", "files.catbox.moe"],
+    "max_external_files_per_thread": 100,
     "follow_new_threads":    True,
     "follow_near_bump_limit": True,
     "follow_cross_board":    False,
@@ -157,6 +160,36 @@ _CROSSTHREAD_RE = re.compile(
     r'href="(?:(?:https?:)?//boards\.4chan(?:nel)?\.org)?/([a-z0-9]+)/thread/(\d+)',
     re.IGNORECASE,
 )
+
+def _extract_external_links(post_html: str, allowed_domains: list) -> list:
+    """
+    Extract external file URLs from post HTML.
+
+    Args:
+        post_html: Raw HTML from post["com"]
+        allowed_domains: List of domain names to match
+
+    Returns:
+        List of URLs found
+    """
+    if not post_html or not allowed_domains:
+        return []
+
+    links = []
+    for domain in allowed_domains:
+        # Escape domain for regex
+        domain_pattern = re.escape(domain)
+        # Match protocol-relative and explicit https
+        # Example: href="https://files.catbox.moe/abc123.png"
+        pattern = rf'href="((?:https?:)?//(?:[^/]*\.)?{domain_pattern}/[^"]+)"'
+        matches = re.findall(pattern, post_html, re.IGNORECASE)
+        for match in matches:
+            # Normalize protocol-relative URLs
+            if match.startswith('//'):
+                match = 'https:' + match
+            links.append(match)
+
+    return links
 
 def _find_successor_threads(new_posts: list, src_board: str, cfg: dict) -> list:
     """Return deduplicated [(board, thread_no), ...] for posts that contain
@@ -284,6 +317,59 @@ def scrape_thread_entry(t: dict, cfg: dict) -> tuple:
                         except Exception as exc:
                             log.warning("Image DL error: %s", exc)
                         time.sleep(delay)
+
+        # External files
+        if cfg.get("save_external_files", False):
+            external_domains = cfg.get("external_domains", [])
+            max_external = cfg.get("max_external_files_per_thread", 0)
+
+            if external_domains:
+                # Extract all external links from posts
+                external_links = []
+                for post in posts:
+                    if post.get("com"):  # Post has text content
+                        links = _extract_external_links(post["com"], external_domains)
+                        for link in links:
+                            external_links.append((link, post["no"]))
+
+                # Apply limit
+                if max_external > 0:
+                    external_links = external_links[:max_external]
+
+                # Download each external file
+                if external_links:
+                    img_dir = thread_dir / "images"
+                    img_dir.mkdir(exist_ok=True)
+
+                    # Track URLs we've already seen to avoid duplicates
+                    seen_urls = set()
+                    for idx, (url, post_no) in enumerate(external_links, start=1):
+                        if url in seen_urls:
+                            continue
+                        seen_urls.add(url)
+
+                        # Extract filename from URL
+                        filename = url.split("/")[-1].split("?")[0]
+                        if not filename:
+                            filename = f"download{idx}"
+
+                        # Prepend post number and index
+                        dest_name = f"{post_no}_{idx}_{filename}"
+                        # Sanitize filename
+                        dest_name = re.sub(r'[<>:"/\\|?*]', "_", dest_name)
+                        dest = img_dir / dest_name
+
+                        if not dest.exists():
+                            try:
+                                resp = requests.get(url, headers=HTTP_HEADERS, timeout=60, stream=True)
+                                if resp.status_code == 200:
+                                    with open(dest, "wb") as f:
+                                        for chunk in resp.iter_content(chunk_size=65536):
+                                            f.write(chunk)
+                                    log.debug("Downloaded external file: %s", dest_name)
+                            except Exception as exc:
+                                log.warning("External file DL error for %s: %s", url, exc)
+                            time.sleep(delay)
 
         t["last_seen_post"] = posts[-1]["no"]
 
@@ -702,6 +788,7 @@ def api_set_config():
     allowed = (
         "interval_minutes", "save_images", "max_images_per_thread",
         "save_raw_json", "request_delay", "output_dir",
+        "save_external_files", "external_domains", "max_external_files_per_thread",
         "follow_new_threads", "follow_near_bump_limit", "follow_cross_board",
         "follow_tag_auto_added", "follow_keywords",
         "auto_archive_on_404", "auto_archive_on_4chan_archive",
@@ -1863,6 +1950,18 @@ details[open] > summary::before { transform: rotate(90deg); }
           <input type="checkbox" id="cfg-json" checked>
           <label for="cfg-json">Save raw JSON</label>
         </div>
+        <div class="setting checkbox-row">
+          <input type="checkbox" id="cfg-external">
+          <label for="cfg-external">Download external files (catbox, litterbox)</label>
+        </div>
+        <div class="setting">
+          <label>External domains (comma-separated)</label>
+          <input type="text" id="cfg-external-domains" value="catbox.moe, files.catbox.moe">
+        </div>
+        <div class="setting">
+          <label>Max external files / thread</label>
+          <input type="number" id="cfg-max-external" min="0" value="100">
+        </div>
       </div>
       <div class="settings-section">
         <div class="settings-section-title">Thread Following</div>
@@ -2038,6 +2137,10 @@ async function loadConfig() {
     document.getElementById('cfg-output').value    = cfg.output_dir ?? '4chan_archive';
     document.getElementById('cfg-images').checked  = cfg.save_images !== false;
     document.getElementById('cfg-json').checked    = cfg.save_raw_json !== false;
+    document.getElementById('cfg-external').checked = cfg.save_external_files === true;
+    const extDomains = Array.isArray(cfg.external_domains) ? cfg.external_domains : ['catbox.moe', 'files.catbox.moe'];
+    document.getElementById('cfg-external-domains').value = extDomains.join(', ');
+    document.getElementById('cfg-max-external').value = cfg.max_external_files_per_thread ?? 100;
     document.getElementById('cfg-follow-enabled').checked = cfg.follow_new_threads !== false;
     document.getElementById('cfg-follow-bump').checked    = cfg.follow_near_bump_limit !== false;
     document.getElementById('cfg-follow-cross').checked   = cfg.follow_cross_board === true;
@@ -2337,6 +2440,8 @@ async function runAll() {
 async function saveConfig() {
   const rawKws   = document.getElementById('cfg-follow-keywords').value;
   const keywords = rawKws.split('\\n').map(s => s.trim()).filter(s => s.length > 0);
+  const rawExtDomains = document.getElementById('cfg-external-domains').value;
+  const extDomains = rawExtDomains.split(',').map(s => s.trim()).filter(s => s.length > 0);
   const cfg = {
     interval_minutes:       parseInt(document.getElementById('cfg-interval').value) || 30,
     max_images_per_thread:  parseInt(document.getElementById('cfg-max-img').value)  || 0,
@@ -2344,6 +2449,9 @@ async function saveConfig() {
     output_dir:             document.getElementById('cfg-output').value || '4chan_archive',
     save_images:            document.getElementById('cfg-images').checked,
     save_raw_json:          document.getElementById('cfg-json').checked,
+    save_external_files:    document.getElementById('cfg-external').checked,
+    external_domains:       extDomains,
+    max_external_files_per_thread: parseInt(document.getElementById('cfg-max-external').value) || 0,
     follow_new_threads:     document.getElementById('cfg-follow-enabled').checked,
     follow_near_bump_limit: document.getElementById('cfg-follow-bump').checked,
     follow_cross_board:     document.getElementById('cfg-follow-cross').checked,
