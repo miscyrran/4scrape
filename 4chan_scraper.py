@@ -64,7 +64,7 @@ DEFAULT_CONFIG = {
     "save_external_files": False,
 
     # Domains to scan for external file links
-    "external_domains": ["catbox.moe", "files.catbox.moe"],
+    "external_domains": ["catbox.moe", "files.catbox.moe", "litter.catbox.moe"],
 
     # Max external files to download per thread (0 = unlimited)
     "max_external_files_per_thread": 100,
@@ -161,6 +161,9 @@ def extract_external_links(post_html: str, allowed_domains: list) -> list:
     """
     if not post_html or not allowed_domains:
         return []
+
+    # 4chan inserts <wbr> mid-URL for line-breaking; remove before matching
+    post_html = post_html.replace("<wbr>", "")
 
     links = []
     for domain in allowed_domains:
