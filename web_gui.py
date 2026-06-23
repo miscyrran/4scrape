@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import sys
 import threading
 import time
@@ -674,13 +675,26 @@ def api_add_thread():
 
 @app.route("/api/threads/<tid>", methods=["DELETE"])
 def api_remove_thread(tid: str):
+    delete_files = request.args.get("delete_files", "").lower() in ("1", "true", "yes")
     with _threads_lock:
         threads = load_threads()
         before  = len(threads)
+        removed = next((t for t in threads if t["id"] == tid), None)
         threads = [t for t in threads if t["id"] != tid]
         if len(threads) == before:
             return jsonify({"error": "Thread not found"}), 404
         save_threads(threads)
+
+    if delete_files and removed:
+        cfg       = load_cfg()
+        archive   = Path(cfg.get("output_dir", "4chan_archive"))
+        board_dir = archive / removed["board"]
+        matches   = list(board_dir.glob(f"{removed['thread_no']}_*")) if board_dir.exists() else []
+        for d in matches:
+            if d.is_dir():
+                shutil.rmtree(d)
+                log.info("Deleted archive folder: %s", d)
+
     return jsonify({"ok": True})
 
 @app.route("/api/threads/<tid>", methods=["PATCH"])
@@ -2399,10 +2413,39 @@ async function addThread() {
 }
 
 async function removeThread(id) {
+  const choice = await showRemoveDialog();
+  if (!choice) return;
   try {
-    const r = await fetch('/api/threads/' + encodeURIComponent(id), {method: 'DELETE'});
-    if (r.ok) { toast('Thread removed', 'info'); await fetchThreads(); }
+    const url = '/api/threads/' + encodeURIComponent(id) + (choice === 'files' ? '?delete_files=true' : '');
+    const r = await fetch(url, {method: 'DELETE'});
+    if (r.ok) {
+      toast(choice === 'files' ? 'Thread and files deleted' : 'Thread removed', 'info');
+      await fetchThreads();
+    }
   } catch (_) { toast('Network error', 'error'); }
+}
+
+function showRemoveDialog() {
+  return new Promise(resolve => {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center';
+    overlay.innerHTML = `
+      <div style="background:var(--bg2,#1e1e2e);border:1px solid var(--border,#444);border-radius:8px;padding:1.5rem 1.75rem;max-width:340px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,.5)">
+        <div style="font-weight:600;margin-bottom:.75rem">Remove thread</div>
+        <div style="font-size:.875rem;color:var(--muted,#aaa);margin-bottom:1.25rem">Do you also want to delete the archived files from disk?</div>
+        <div style="display:flex;gap:.6rem;justify-content:flex-end;flex-wrap:wrap">
+          <button id="rm-cancel"  style="padding:.4rem .9rem;border-radius:5px;border:1px solid var(--border,#444);background:transparent;color:inherit;cursor:pointer">Cancel</button>
+          <button id="rm-listing" style="padding:.4rem .9rem;border-radius:5px;border:1px solid var(--border,#444);background:transparent;color:inherit;cursor:pointer">Listing only</button>
+          <button id="rm-files"   style="padding:.4rem .9rem;border-radius:5px;border:none;background:#c0392b;color:#fff;cursor:pointer">Delete files too</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const cleanup = r => { document.body.removeChild(overlay); resolve(r); };
+    overlay.querySelector('#rm-cancel').onclick  = () => cleanup(null);
+    overlay.querySelector('#rm-listing').onclick = () => cleanup('listing');
+    overlay.querySelector('#rm-files').onclick   = () => cleanup('files');
+    overlay.addEventListener('click', e => { if (e.target === overlay) cleanup(null); });
+  });
 }
 
 async function archiveThread(id) {
