@@ -353,7 +353,7 @@ def scrape_thread(board: str, thread_no: int, cfg: dict,
             for post in new_images:
                 tim  = post["tim"]
                 ext  = post["ext"]
-                orig = post.get("filename", str(tim))
+                orig = html.unescape(post.get("filename", str(tim)))
                 # Use original filename; fall back to tim-based name
                 dest_name = f"{orig}{ext}"
                 # Sanitise filename
