@@ -919,6 +919,18 @@ def archive_view(board: str, thread_no: int):
         # Load metadata cache for this thread
         metadata_cache = metadata_detector.get_thread_metadata_status(thread_dir) if thread_dir else {}
 
+        # Build map of post_no -> [external filenames] (files saved as {post_no}_{idx}_{name})
+        external_files_map: dict = {}
+        if thread_dir:
+            images_dir = thread_dir / "images"
+            if images_dir.exists():
+                for _f in images_dir.iterdir():
+                    if not _f.is_file():
+                        continue
+                    _m = re.match(r'^(\d+)_(\d+)_(.+)$', _f.name)
+                    if _m:
+                        external_files_map.setdefault(int(_m.group(1)), []).append(_f.name)
+
         def render_post(p):
             no   = p.get("no", "?")
             name = html_lib.escape(p.get("name") or "Anonymous")
@@ -977,6 +989,48 @@ def archive_view(board: str, thread_no: int):
                             f'alt="{html_lib.escape(orig)}" loading="lazy"></div>'
                         )
 
+            # External files linked to this post
+            ext_html = ""
+            if thread_dir and no in external_files_map:
+                ext_parts = []
+                for fname in sorted(external_files_map[no]):
+                    src_url = f"/archive-img/{board}/{thread_no}/{url_quote(fname)}"
+                    ext_lower = Path(fname).suffix.lower()
+                    display_name = re.sub(r'^\d+_\d+_', '', fname)
+                    has_meta = metadata_cache.get(fname, False)
+                    meta_badge = ""
+                    if has_meta:
+                        meta_url = f"/archive-metadata/{board}/{thread_no}/{url_quote(fname)}"
+                        meta_badge = (
+                            f'<span class="metadata-badge" '
+                            f'data-metadata-url="{meta_url}" '
+                            f'title="SD metadata detected - click to view">SD</span>'
+                        )
+                    if ext_lower in (".webm", ".mp4"):
+                        ext_parts.append(
+                            f'<div class="post-img ext-file">'
+                            f'{meta_badge}'
+                            f'<div class="ext-label">{html_lib.escape(display_name)}</div>'
+                            f'<video controls preload="metadata" src="{src_url}">'
+                            f'<a href="{src_url}" target="_blank">{html_lib.escape(display_name)}</a>'
+                            f'</video></div>'
+                        )
+                    elif ext_lower in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
+                        ext_parts.append(
+                            f'<div class="post-img ext-file">'
+                            f'{meta_badge}'
+                            f'<div class="ext-label">{html_lib.escape(display_name)}</div>'
+                            f'<img src="{src_url}" alt="{html_lib.escape(display_name)}" loading="lazy"></div>'
+                        )
+                    else:
+                        ext_parts.append(
+                            f'<div class="ext-file-link">'
+                            f'<a href="{src_url}" target="_blank" rel="noopener">'
+                            f'&#128190; {html_lib.escape(display_name)}</a></div>'
+                        )
+                if ext_parts:
+                    ext_html = '<div class="ext-files">' + "\n".join(ext_parts) + '</div>'
+
             sub_html = f'<div class="post-sub">{html_lib.escape(sub)}</div>' if sub else ""
             refs = backlinks.get(no, [])
             if refs:
@@ -1002,7 +1056,7 @@ def archive_view(board: str, thread_no: int):
                 f'<span class="post-ts">{ts}</span>'
                 f'</div>'
                 f'{backlinks_html}'
-                f'{sub_html}{img_html}{com_html}'
+                f'{sub_html}{img_html}{ext_html}{com_html}'
                 f'</div>'
             )
 
@@ -1213,6 +1267,13 @@ main{{max-width:860px;margin:0 auto;padding:1.4rem 1.2rem}}
   background:#22d55e;
   transform:translateY(-1px);
 }}
+.ext-files{{display:flex;flex-wrap:wrap;gap:.5rem;margin:.4rem 0}}
+.ext-file{{position:relative}}
+.ext-label{{font-size:.7rem;color:var(--muted);margin-bottom:.2rem;
+             font-family:'Courier New',monospace;word-break:break-all}}
+.ext-file-link{{font-size:.82rem;margin:.25rem 0}}
+.ext-file-link a{{color:var(--blue);text-decoration:none}}
+.ext-file-link a:hover{{text-decoration:underline}}
 </style>
 </head>
 <body>
