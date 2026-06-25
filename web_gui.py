@@ -27,6 +27,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote as url_quote
 
 import requests
 import schedule
@@ -934,18 +935,25 @@ def archive_view(board: str, thread_no: int):
 
             img_html = ""
             if p.get("tim") and p.get("ext") and thread_dir:
-                orig = re.sub(r'[<>:"/\\|?*]', "_",
-                              f"{p.get('filename', p['tim'])}{p['ext']}")
+                raw_name = html_lib.unescape(p.get("filename", str(p["tim"])))
+                orig = re.sub(r'[<>:"/\\|?*]', "_", f"{raw_name}{p['ext']}")
                 img_path = thread_dir / "images" / orig
+                # Fallback: older downloads saved filenames with raw HTML entities
+                if not img_path.exists():
+                    orig_legacy = re.sub(r'[<>:"/\\|?*]', "_",
+                                         f"{p.get('filename', str(p['tim']))}{p['ext']}")
+                    if (thread_dir / "images" / orig_legacy).exists():
+                        orig = orig_legacy
+                        img_path = thread_dir / "images" / orig_legacy
                 ext_lower = (p.get("ext") or "").lower()
                 if img_path.exists():
-                    src_url = f"/archive-img/{board}/{thread_no}/{html_lib.escape(orig)}"
+                    src_url = f"/archive-img/{board}/{thread_no}/{url_quote(orig)}"
 
                     # Check for metadata
                     has_metadata = metadata_cache.get(orig, False)
                     metadata_badge = ""
                     if has_metadata:
-                        metadata_url = f"/archive-metadata/{board}/{thread_no}/{html_lib.escape(orig)}"
+                        metadata_url = f"/archive-metadata/{board}/{thread_no}/{url_quote(orig)}"
                         metadata_badge = (
                             f'<span class="metadata-badge" '
                             f'data-metadata-url="{metadata_url}" '
