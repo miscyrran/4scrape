@@ -2164,11 +2164,13 @@ baked</textarea>
 
 <script>
 // ── State ──────────────────────────────────────────────────────────────────────
-let threads        = [];
-let nextRunTs      = null;
-let isRunning      = false;
-let archiveSortKey = 'title';   // 'title' | 'board'
-let patterns       = [];
+let threads               = [];
+let nextRunTs             = null;
+let isRunning             = false;
+let archiveSortKey        = 'title';   // 'title' | 'board'
+let patterns              = [];
+let lastArchiveRender     = 0;
+let forceNextArchiveRender = false;
 
 // ── Tab navigation ─────────────────────────────────────────────────────────────
 function switchTab(name) {
@@ -2190,6 +2192,7 @@ function setSort(key) {
   archiveSortKey = key;
   document.querySelectorAll('.sort-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('sort-' + key).classList.add('active');
+  forceNextArchiveRender = true;
   renderTable();
 }
 
@@ -2438,16 +2441,33 @@ function renderTable() {
     el.innerHTML = makeTable(active.map(t => makeRow(t, false)).join(''));
   }
 
-  const al = document.getElementById('archive-list');
-  if (!archived.length) {
-    al.innerHTML = '<div class="empty" style="padding:1.5rem 1rem"><p>No archived threads yet.</p></div>';
-  } else {
-    const sorted = [...archived].sort((a, b) => {
-      const va = archiveSortKey === 'board' ? (a.board || '') : (a.title || '');
-      const vb = archiveSortKey === 'board' ? (b.board || '') : (b.title || '');
-      return va.localeCompare(vb);
-    });
-    al.innerHTML = makeTable(sorted.map(t => makeRow(t, true, true)).join(''), true);
+  const shouldRenderArchive = forceNextArchiveRender || Date.now() - lastArchiveRender >= 60000;
+  forceNextArchiveRender = false;
+
+  if (shouldRenderArchive) {
+    const selectedIds = new Set(
+      Array.from(document.querySelectorAll('#archive-list .row-check[data-id]:checked'))
+           .map(c => c.dataset.id)
+    );
+
+    const al = document.getElementById('archive-list');
+    if (!archived.length) {
+      al.innerHTML = '<div class="empty" style="padding:1.5rem 1rem"><p>No archived threads yet.</p></div>';
+    } else {
+      const sorted = [...archived].sort((a, b) => {
+        const va = archiveSortKey === 'board' ? (a.board || '') : (a.title || '');
+        const vb = archiveSortKey === 'board' ? (b.board || '') : (b.title || '');
+        return va.localeCompare(vb);
+      });
+      al.innerHTML = makeTable(sorted.map(t => makeRow(t, true, true)).join(''), true);
+    }
+
+    if (selectedIds.size > 0) {
+      document.querySelectorAll('#archive-list .row-check[data-id]').forEach(c => {
+        if (selectedIds.has(c.dataset.id)) c.checked = true;
+      });
+    }
+    lastArchiveRender = Date.now();
   }
   updateBulkBar();
 }
@@ -2517,6 +2537,7 @@ async function removeThread(id) {
     const r = await fetch(url, {method: 'DELETE'});
     if (r.ok) {
       toast(choice === 'files' ? 'Thread and files deleted' : 'Thread removed', 'info');
+      forceNextArchiveRender = true;
       await fetchThreads();
     }
   } catch (_) { toast('Network error', 'error'); }
@@ -2564,6 +2585,7 @@ async function deleteSelected() {
       : n + ' thread' + (n > 1 ? 's' : '') + ' removed',
       'info');
   }
+  forceNextArchiveRender = true;
   await fetchThreads();
 }
 
@@ -2597,7 +2619,7 @@ async function archiveThread(id) {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({user_archived: true})
     });
-    if (r.ok) { await fetchThreads(); }
+    if (r.ok) { forceNextArchiveRender = true; await fetchThreads(); }
     else { toast('Could not archive thread', 'error'); }
   } catch (_) { toast('Network error', 'error'); }
 }
@@ -2609,7 +2631,7 @@ async function unarchiveThread(id) {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({user_archived: false})
     });
-    if (r.ok) { await fetchThreads(); }
+    if (r.ok) { forceNextArchiveRender = true; await fetchThreads(); }
     else { toast('Could not unarchive thread', 'error'); }
   } catch (_) { toast('Network error', 'error'); }
 }
