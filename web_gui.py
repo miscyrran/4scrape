@@ -1779,6 +1779,20 @@ main { max-width: 1160px; margin: 0 auto; padding: 1.4rem 1.5rem; }
 .s-pending  .dot { background: var(--muted); animation: blink 1.2s ease-in-out infinite; }
 @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.25} }
 .actions-cell { display: flex; gap: .35rem; }
+.row-check { accent-color: var(--accent); width: .9rem; height: .9rem; cursor: pointer; }
+.bulk-bar {
+  display: none;
+  align-items: center;
+  gap: .6rem;
+  margin-bottom: .75rem;
+  padding: .45rem .75rem;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: .84rem;
+}
+.bulk-bar .bulk-count { color: var(--text); font-weight: 500; }
+.bulk-bar .spacer { flex: 1; }
 
 /* ── Empty state ── */
 .empty {
@@ -2013,6 +2027,11 @@ details[open] > summary::before { transform: rotate(90deg); }
           <button class="sort-btn active" id="sort-title" onclick="setSort('title')">Title</button>
           <button class="sort-btn" id="sort-board" onclick="setSort('board')">Board</button>
         </div>
+      </div>
+      <div id="bulk-bar" class="bulk-bar">
+        <span class="bulk-count" id="bulk-count">0 selected</span>
+        <div class="spacer"></div>
+        <button class="btn" onclick="deleteSelected()">Delete Selected</button>
       </div>
       <div id="archive-list"></div>
     </div>
@@ -2354,10 +2373,14 @@ async function deletePattern(id) {
 }
 
 // ── Render table ───────────────────────────────────────────────────────────────
-function makeTable(rows) {
+function makeTable(rows, selectable) {
+  const chkTh = selectable
+    ? '<th style="width:2rem;padding-left:.9rem"><input type="checkbox" class="row-check" id="select-all-chk" onchange="selectAll(this.checked)" title="Select all"></th>'
+    : '';
   return `<div class="t-wrap">
     <table class="thread-table">
       <thead><tr>
+        ${chkTh}
         <th>Title</th><th>Board</th><th>Posts</th>
         <th>Images</th><th>Last Run</th><th>Status</th><th></th>
       </tr></thead>
@@ -2365,7 +2388,7 @@ function makeTable(rows) {
     </table></div>`;
 }
 
-function makeRow(t, isArchived) {
+function makeRow(t, isArchived, selectable) {
   const sc   = 's-' + (t.status || 'pending');
   const slbl = {active:'Active', archived:'Archived', '404':'404 Gone', pending:'Pending'}[t.status] || t.status;
   const last = t.last_scraped ? timeAgo(new Date(t.last_scraped)) : '—';
@@ -2376,7 +2399,11 @@ function makeRow(t, isArchived) {
     : `<button class="btn-icon" title="Archive" onclick="archiveThread('${esc(t.id)}')">&#x229F;</button>
        <button class="btn-icon" title="Scrape now" onclick="scrapeOne('${esc(t.id)}')">&#x21BB;</button>
        <button class="btn-icon danger" title="Remove" onclick="removeThread('${esc(t.id)}')">&#x2715;</button>`;
+  const chkTd = selectable
+    ? `<td style="padding-left:.9rem"><input type="checkbox" class="row-check" data-id="${esc(t.id)}" onchange="updateBulkBar()"></td>`
+    : '';
   return `<tr>
+      ${chkTd}
       <td class="col-title"><div class="title-cell">
         <a class="title-link" href="/archive/${esc(t.board)}/${esc(t.thread_no)}" target="_blank" title="${ttl}">${ttl}</a>
         ${t.auto_added ? '<span class="auto-tag" title="Auto-followed">&#x2935;</span>' : ''}
@@ -2420,8 +2447,9 @@ function renderTable() {
       const vb = archiveSortKey === 'board' ? (b.board || '') : (b.title || '');
       return va.localeCompare(vb);
     });
-    al.innerHTML = makeTable(sorted.map(t => makeRow(t, true)).join(''));
+    al.innerHTML = makeTable(sorted.map(t => makeRow(t, true, true)).join(''), true);
   }
+  updateBulkBar();
 }
 
 // ── Actions ────────────────────────────────────────────────────────────────
@@ -2492,6 +2520,51 @@ async function removeThread(id) {
       await fetchThreads();
     }
   } catch (_) { toast('Network error', 'error'); }
+}
+
+function updateBulkBar() {
+  const checks = document.querySelectorAll('#archive-list .row-check:checked');
+  const all    = document.querySelectorAll('#archive-list .row-check');
+  const n      = checks.length;
+  const bar    = document.getElementById('bulk-bar');
+  bar.style.display = n > 0 ? 'flex' : 'none';
+  document.getElementById('bulk-count').textContent = n + ' selected';
+  const allChk = document.getElementById('select-all-chk');
+  if (allChk) {
+    allChk.indeterminate = n > 0 && n < all.length;
+    allChk.checked = n > 0 && n === all.length;
+  }
+}
+
+function selectAll(checked) {
+  document.querySelectorAll('#archive-list .row-check').forEach(c => c.checked = checked);
+  updateBulkBar();
+}
+
+async function deleteSelected() {
+  const ids = Array.from(document.querySelectorAll('#archive-list .row-check:checked'))
+                   .map(c => c.dataset.id);
+  if (!ids.length) return;
+  const choice = await showRemoveDialog();
+  if (!choice) return;
+  let errors = 0;
+  for (const id of ids) {
+    try {
+      const url = '/api/threads/' + encodeURIComponent(id) + (choice === 'files' ? '?delete_files=true' : '');
+      const r = await fetch(url, {method: 'DELETE'});
+      if (!r.ok) errors++;
+    } catch (_) { errors++; }
+  }
+  const n = ids.length;
+  if (errors) {
+    toast((n - errors) + ' deleted, ' + errors + ' failed', 'error');
+  } else {
+    toast(choice === 'files'
+      ? n + ' thread' + (n > 1 ? 's' : '') + ' and files deleted'
+      : n + ' thread' + (n > 1 ? 's' : '') + ' removed',
+      'info');
+  }
+  await fetchThreads();
 }
 
 function showRemoveDialog() {
