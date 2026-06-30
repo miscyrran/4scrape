@@ -177,6 +177,9 @@ def _extract_external_links(post_html: str, allowed_domains: list) -> list:
     if not post_html or not allowed_domains:
         return []
 
+    # 4chan inserts <wbr> mid-URL for line-breaking; remove before matching
+    post_html = post_html.replace("<wbr>", "")
+
     links = []
     for domain in allowed_domains:
         # Escape domain for regex
