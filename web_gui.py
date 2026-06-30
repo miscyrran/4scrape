@@ -1292,6 +1292,10 @@ main{{max-width:860px;margin:0 auto;padding:1.4rem 1.2rem}}
     <label class="metadata-filter">
       <input type="checkbox" id="filter-metadata">
       Show only posts with metadata
+    </label> &nbsp;·&nbsp;
+    <label class="metadata-filter">
+      <input type="checkbox" id="filter-ext-files">
+      Show only posts with downloaded external files
     </label>
   </div>
   {body}
@@ -1406,22 +1410,23 @@ function escapeHtml(text) {{
   return div.innerHTML;
 }}
 
-// Metadata filter
-const filterCheckbox = document.getElementById('filter-metadata');
-if (filterCheckbox) {{
-  filterCheckbox.addEventListener('change', () => {{
-    const allPosts = document.querySelectorAll('.post');
-    const filterActive = filterCheckbox.checked;
-    allPosts.forEach(post => {{
-      const hasMetadata = post.querySelector('.metadata-badge') !== null;
-      if (filterActive && !hasMetadata) {{
-        post.classList.add('filtered-hidden');
-      }} else {{
-        post.classList.remove('filtered-hidden');
-      }}
-    }});
+// Post filters (metadata + external files)
+function applyPostFilters() {{
+  const filterMeta    = document.getElementById('filter-metadata');
+  const filterExt     = document.getElementById('filter-ext-files');
+  const metaActive    = filterMeta  && filterMeta.checked;
+  const extActive     = filterExt   && filterExt.checked;
+  document.querySelectorAll('.post').forEach(post => {{
+    const hasMetadata  = post.querySelector('.metadata-badge') !== null;
+    const hasExtFiles  = post.querySelector('.ext-files') !== null;
+    const hide = (metaActive && !hasMetadata) || (extActive && !hasExtFiles);
+    post.classList.toggle('filtered-hidden', hide);
   }});
 }}
+const filterCheckbox = document.getElementById('filter-metadata');
+if (filterCheckbox) filterCheckbox.addEventListener('change', applyPostFilters);
+const filterExtCheckbox = document.getElementById('filter-ext-files');
+if (filterExtCheckbox) filterExtCheckbox.addEventListener('change', applyPostFilters);
 </script>
 </body>
 </html>"""
