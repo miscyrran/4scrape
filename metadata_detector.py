@@ -114,7 +114,16 @@ def read_stealth_metadata(filepath: Path) -> Optional[str]:
     try:
         import numpy as np
 
+        # Skip large images to avoid OOM — SD-generated images are rarely >8 MB
+        try:
+            if filepath.stat().st_size > 8 * 1024 * 1024:
+                return None
+        except OSError:
+            return None
+
         img = Image.open(filepath)
+        if img.width * img.height > 4_000_000:  # skip images larger than ~4 MP
+            return None
         arr = np.array(img.convert('RGBA'))  # (height, width, 4)
         height, width = arr.shape[:2]
 
