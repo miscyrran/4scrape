@@ -647,18 +647,28 @@ def _scan_catalogs_for_patterns(cfg: dict) -> list:
 
     return list(discovered.keys())
 
+_scheduler_thread = None
+
 def start_scheduler(interval: int):
+    """(Re-)register the scrape job. The polling loop thread is started at
+    most once — re-calling this (e.g. on every settings save) only swaps the
+    scheduled job instead of leaking a new daemon thread each time."""
+    global _scheduler_thread
     _run_state["next_run_ts"] = (
         datetime.utcnow() + timedelta(minutes=interval)
     ).isoformat() + "Z"
+    schedule.clear()
     schedule.every(interval).minutes.do(run_all_threads)
 
-    def loop():
-        while True:
-            schedule.run_pending()
-            time.sleep(10)
+    if _scheduler_thread is None or not _scheduler_thread.is_alive():
+        def loop():
+            while True:
+                schedule.run_pending()
+                time.sleep(10)
 
-    threading.Thread(target=loop, daemon=True, name="scheduler").start()
+        _scheduler_thread = threading.Thread(target=loop, daemon=True,
+                                             name="scheduler")
+        _scheduler_thread.start()
     log.info("Scheduler running every %d min", interval)
 
 # ── Flask app ─────────────────────────────────────────────────────────────────
@@ -885,8 +895,8 @@ def api_set_config():
         if key in data:
             cfg[key] = data[key]
     save_cfg(cfg)
-    # Reschedule with new interval
-    schedule.clear()
+    # Reschedule with new interval (re-registers the job; the loop thread
+    # is only started once)
     interval = int(cfg.get("interval_minutes", 30))
     start_scheduler(interval)
     return jsonify(cfg)
