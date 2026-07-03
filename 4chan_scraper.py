@@ -361,8 +361,9 @@ def scrape_thread(board: str, thread_no: int, cfg: dict,
                 tim  = post["tim"]
                 ext  = post["ext"]
                 orig = html.unescape(post.get("filename", str(tim)))
-                # Use original filename; fall back to tim-based name
-                dest_name = f"{orig}{ext}"
+                # Prefix with the unique tim id — original filenames collide
+                # constantly and a collision silently drops the second image
+                dest_name = f"{tim}_{orig}{ext}"
                 # Sanitise filename
                 dest_name = re.sub(r'[<>:"/\\|?*]', "_", dest_name)
                 dest = img_dir / dest_name

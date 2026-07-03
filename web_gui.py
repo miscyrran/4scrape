@@ -361,8 +361,12 @@ def scrape_thread_entry(t: dict, cfg: dict) -> tuple:
                 img_dir = thread_dir / "images"
                 img_dir.mkdir(exist_ok=True)
                 for p in [x for x in new_posts if x.get("tim") and x.get("ext")]:
+                    # Prefix with the unique 4chan tim id — original filenames
+                    # collide constantly (image.png, 1.jpg) and a collision
+                    # silently drops the second image
+                    raw_name = html_lib.unescape(str(p.get("filename") or p["tim"]))
                     fname = re.sub(r'[<>:"/\\|?*]',
-                                   "_", f"{p.get('filename', p['tim'])}{p['ext']}")
+                                   "_", f"{p['tim']}_{raw_name}{p['ext']}")
                     dest = img_dir / fname
                     if not dest.exists():
                         try:
@@ -985,16 +989,24 @@ def archive_view(board: str, thread_no: int):
 
             img_html = ""
             if p.get("tim") and p.get("ext") and thread_dir:
-                raw_name = html_lib.unescape(p.get("filename", str(p["tim"])))
-                orig = re.sub(r'[<>:"/\\|?*]', "_", f"{raw_name}{p['ext']}")
+                raw_name = html_lib.unescape(str(p.get("filename") or p["tim"]))
+                candidates = [
+                    # Current format: unique tim prefix
+                    f"{p['tim']}_{raw_name}{p['ext']}",
+                    # Legacy: original filename only
+                    f"{raw_name}{p['ext']}",
+                    # Legacy: filename with raw HTML entities
+                    f"{p.get('filename', str(p['tim']))}{p['ext']}",
+                ]
+                orig = re.sub(r'[<>:"/\\|?*]', "_", candidates[0])
                 img_path = thread_dir / "images" / orig
-                # Fallback: older downloads saved filenames with raw HTML entities
-                if not img_path.exists():
-                    orig_legacy = re.sub(r'[<>:"/\\|?*]', "_",
-                                         f"{p.get('filename', str(p['tim']))}{p['ext']}")
-                    if (thread_dir / "images" / orig_legacy).exists():
-                        orig = orig_legacy
-                        img_path = thread_dir / "images" / orig_legacy
+                for cand in candidates[1:]:
+                    if img_path.exists():
+                        break
+                    cand = re.sub(r'[<>:"/\\|?*]', "_", cand)
+                    if (thread_dir / "images" / cand).exists():
+                        orig = cand
+                        img_path = thread_dir / "images" / cand
                 ext_lower = (p.get("ext") or "").lower()
                 if img_path.exists():
                     src_url = f"/archive-img/{board}/{thread_no}/{url_quote(orig)}"
