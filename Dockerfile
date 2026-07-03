@@ -44,6 +44,10 @@ ENV CONFIG_PATH=/data/config.json \
 
 EXPOSE 5000
 
+# python:3.11-slim ships no curl, so probe with Python itself.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:5000/api/status', timeout=4)"
+
 # ── Entrypoint ────────────────────────────────────────────────────────────────
 # web_gui.py includes the background scraper loop, so one process handles both.
 # Pass --no-scheduler to run just the GUI (e.g. when using a separate

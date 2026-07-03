@@ -51,8 +51,10 @@ services:
     #       memory: 512M
 
     # ── Health check (mirrors Dockerfile HEALTHCHECK) ─────────────────────────
+    # python:3.11-slim ships no curl, so probe with Python itself.
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:5000/"]
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:5000/api/status', timeout=4)"]
       interval: 30s
       timeout: 5s
       start_period: 10s
