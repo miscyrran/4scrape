@@ -395,15 +395,18 @@ def scrape_thread_entry(t: dict, cfg: dict) -> tuple:
                         dest = img_dir / dest_name
 
                         if not dest.exists():
+                            part = dest.with_suffix(dest.suffix + ".part")
                             try:
                                 resp = requests.get(url, headers=HTTP_HEADERS, timeout=60, stream=True)
                                 if resp.status_code == 200:
-                                    with open(dest, "wb") as f:
+                                    with open(part, "wb") as f:
                                         for chunk in resp.iter_content(chunk_size=65536):
                                             f.write(chunk)
+                                    os.replace(part, dest)
                                     log.debug("Downloaded external file: %s", dest_name)
                             except Exception as exc:
                                 log.warning("External file DL error for %s: %s", url, exc)
+                                part.unlink(missing_ok=True)
                             time.sleep(delay)
 
         t["last_seen_post"] = posts[-1]["no"]
@@ -437,16 +440,21 @@ def scrape_thread_entry(t: dict, cfg: dict) -> tuple:
                 if dest.exists() or any((img_dir / n).exists()
                                         for n in legacy_names):
                     continue
+                # Stream into a .part file and rename on success so a dropped
+                # connection never leaves a truncated file at dest
+                part = dest.with_suffix(dest.suffix + ".part")
                 try:
                     r = requests.get(
                         f"{IMG_BASE}/{board}/{p['tim']}{p['ext']}",
                         headers=HTTP_HEADERS, timeout=60, stream=True)
                     if r.status_code == 200:
-                        with open(dest, "wb") as f:
+                        with open(part, "wb") as f:
                             for chunk in r.iter_content(65536):
                                 f.write(chunk)
+                        os.replace(part, dest)
                 except Exception as exc:
                     log.warning("Image DL error: %s", exc)
+                    part.unlink(missing_ok=True)
                 time.sleep(delay)
 
     # Update stats

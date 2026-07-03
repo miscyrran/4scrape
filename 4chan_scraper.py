@@ -234,17 +234,23 @@ def api_get(url: str, delay: float, retries: int = 3) -> Optional[dict]:
 
 
 def img_get(url: str, dest: Path, delay: float) -> bool:
-    """Download an image to dest, skipping if already present."""
+    """Download an image to dest, skipping if already present.
+
+    Streams into a .part file and renames on success, so a dropped
+    connection mid-stream never leaves a truncated file at dest.
+    """
     if dest.exists():
         log.debug("Image already saved: %s", dest.name)
         return False
+    part = dest.with_suffix(dest.suffix + ".part")
     try:
         resp = requests.get(url, headers=HEADERS, timeout=60, stream=True)
         if resp.status_code == 200:
             dest.parent.mkdir(parents=True, exist_ok=True)
-            with open(dest, "wb") as f:
+            with open(part, "wb") as f:
                 for chunk in resp.iter_content(chunk_size=65536):
                     f.write(chunk)
+            os.replace(part, dest)
             log.debug("Saved image: %s", dest.name)
             time.sleep(delay)
             return True
@@ -252,6 +258,7 @@ def img_get(url: str, dest: Path, delay: float) -> bool:
             log.warning("Image download failed HTTP %d: %s", resp.status_code, url)
     except requests.RequestException as exc:
         log.warning("Image download error (%s): %s", exc, url)
+        part.unlink(missing_ok=True)
     return False
 
 
