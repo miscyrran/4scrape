@@ -12,6 +12,11 @@ from PIL import Image
 import re
 
 
+# Real PNG text chunks are tiny; a crafted file can declare a ~4 GB chunk
+# length and force a huge allocation. Skip anything above this bound.
+MAX_PNG_CHUNK = 16 * 1024 * 1024
+
+
 def read_png_chunks(filepath: Path) -> dict:
     """Read PNG text chunks containing metadata."""
     try:
@@ -30,6 +35,11 @@ def read_png_chunks(filepath: Path) -> dict:
 
                 length = struct.unpack('>I', chunk_data[:4])[0]
                 chunk_type = chunk_data[4:8].decode('latin1')
+
+                if length > MAX_PNG_CHUNK:
+                    # Don't trust the declared length — seek past data + CRC
+                    f.seek(length + 4, 1)
+                    continue
 
                 # Read chunk data and CRC
                 data = f.read(length)
