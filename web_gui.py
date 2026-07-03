@@ -353,34 +353,6 @@ def scrape_thread_entry(t: dict, cfg: dict) -> tuple:
             for p in new_posts:
                 f.write(_format_post(p) + "\n")
 
-        # Images
-        if cfg.get("save_images", True):
-            max_i = cfg.get("max_images_per_thread", 0)
-            all_i = [p for p in posts if p.get("tim") and p.get("ext")]
-            if not max_i or len(all_i) <= max_i:
-                img_dir = thread_dir / "images"
-                img_dir.mkdir(exist_ok=True)
-                for p in [x for x in new_posts if x.get("tim") and x.get("ext")]:
-                    # Prefix with the unique 4chan tim id — original filenames
-                    # collide constantly (image.png, 1.jpg) and a collision
-                    # silently drops the second image
-                    raw_name = html_lib.unescape(str(p.get("filename") or p["tim"]))
-                    fname = re.sub(r'[<>:"/\\|?*]',
-                                   "_", f"{p['tim']}_{raw_name}{p['ext']}")
-                    dest = img_dir / fname
-                    if not dest.exists():
-                        try:
-                            r = requests.get(
-                                f"{IMG_BASE}/{board}/{p['tim']}{p['ext']}",
-                                headers=HTTP_HEADERS, timeout=60, stream=True)
-                            if r.status_code == 200:
-                                with open(dest, "wb") as f:
-                                    for chunk in r.iter_content(65536):
-                                        f.write(chunk)
-                        except Exception as exc:
-                            log.warning("Image DL error: %s", exc)
-                        time.sleep(delay)
-
         # External files
         if cfg.get("save_external_files", False):
             external_domains = cfg.get("external_domains", [])
@@ -439,6 +411,43 @@ def scrape_thread_entry(t: dict, cfg: dict) -> tuple:
         near_bump = cfg.get("follow_near_bump_limit", True)
         if not near_bump or len(posts) >= 300:
             discovered = _find_successor_threads(new_posts, board, cfg)
+
+    # Images — checked on every pass (all posts, not just new ones) so a
+    # download that failed while the thread is live gets retried next cycle
+    if cfg.get("save_images", True):
+        max_i = cfg.get("max_images_per_thread", 0)
+        all_i = [p for p in posts if p.get("tim") and p.get("ext")]
+        if all_i and (not max_i or len(all_i) <= max_i):
+            img_dir = thread_dir / "images"
+            img_dir.mkdir(exist_ok=True)
+            for p in all_i:
+                # Prefix with the unique 4chan tim id — original filenames
+                # collide constantly (image.png, 1.jpg) and a collision
+                # silently drops the second image
+                raw_name = html_lib.unescape(str(p.get("filename") or p["tim"]))
+                fname = re.sub(r'[<>:"/\\|?*]',
+                               "_", f"{p['tim']}_{raw_name}{p['ext']}")
+                dest = img_dir / fname
+                # Files saved before the tim prefix existed count as present
+                legacy_names = [
+                    re.sub(r'[<>:"/\\|?*]', "_", n) for n in
+                    (f"{raw_name}{p['ext']}",
+                     f"{p.get('filename', str(p['tim']))}{p['ext']}")
+                ]
+                if dest.exists() or any((img_dir / n).exists()
+                                        for n in legacy_names):
+                    continue
+                try:
+                    r = requests.get(
+                        f"{IMG_BASE}/{board}/{p['tim']}{p['ext']}",
+                        headers=HTTP_HEADERS, timeout=60, stream=True)
+                    if r.status_code == 200:
+                        with open(dest, "wb") as f:
+                            for chunk in r.iter_content(65536):
+                                f.write(chunk)
+                except Exception as exc:
+                    log.warning("Image DL error: %s", exc)
+                time.sleep(delay)
 
     # Update stats
     t["title"]        = title or t.get("title") or f"Thread {thread_no}"

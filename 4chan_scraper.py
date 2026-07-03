@@ -318,46 +318,46 @@ def scrape_thread(board: str, thread_no: int, cfg: dict,
     last_seen     = board_state.get(str(thread_no), 0)
     new_posts     = [p for p in posts if p["no"] > last_seen]
 
-    if not new_posts:
+    if new_posts:
+        log.info("/%s/ thread %d — %d new post(s)  [%s]", board, thread_no, len(new_posts), slug[:40])
+
+        # ---- Save raw JSON ----
+        if cfg["save_raw_json"]:
+            json_path = thread_dir / "thread.json"
+            with open(json_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+
+        # ---- Append plain-text posts ----
+        txt_path = thread_dir / "posts.txt"
+        mode = "a" if txt_path.exists() else "w"
+        with open(txt_path, mode, encoding="utf-8") as f:
+            if mode == "w":
+                # Write thread header on first pass
+                f.write(f"Board: /{board}/\n")
+                f.write(f"Thread: {thread_no}\n")
+                f.write(f"Subject: {clean_html(op.get('sub') or '(no subject)')}\n")
+                f.write(f"Archived: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}\n")
+                f.write("=" * 70 + "\n\n")
+            for post in new_posts:
+                f.write(format_post(post))
+                f.write("\n")
+    else:
         log.debug("/%s/ thread %d — no new posts", board, thread_no)
-        return
-
-    log.info("/%s/ thread %d — %d new post(s)  [%s]", board, thread_no, len(new_posts), slug[:40])
-
-    # ---- Save raw JSON ----
-    if cfg["save_raw_json"]:
-        json_path = thread_dir / "thread.json"
-        with open(json_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-
-    # ---- Append plain-text posts ----
-    txt_path = thread_dir / "posts.txt"
-    mode = "a" if txt_path.exists() else "w"
-    with open(txt_path, mode, encoding="utf-8") as f:
-        if mode == "w":
-            # Write thread header on first pass
-            f.write(f"Board: /{board}/\n")
-            f.write(f"Thread: {thread_no}\n")
-            f.write(f"Subject: {clean_html(op.get('sub') or '(no subject)')}\n")
-            f.write(f"Archived: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}\n")
-            f.write("=" * 70 + "\n\n")
-        for post in new_posts:
-            f.write(format_post(post))
-            f.write("\n")
 
     # ---- Download images ----
+    # Checked on every pass (all posts, not just new ones) so a download
+    # that failed while the thread is live gets retried next cycle
     if cfg["save_images"]:
         img_dir       = thread_dir / "images"
         images_in_thread = [p for p in posts if p.get("tim") and p.get("ext")]
-        new_images    = [p for p in new_posts if p.get("tim") and p.get("ext")]
 
         max_imgs = cfg.get("max_images_per_thread", 0)
         if max_imgs and len(images_in_thread) > max_imgs:
             log.info("  Skipping images — thread has %d images (limit %d)",
                      len(images_in_thread), max_imgs)
-        else:
+        elif images_in_thread:
             img_dir.mkdir(parents=True, exist_ok=True)
-            for post in new_images:
+            for post in images_in_thread:
                 tim  = post["tim"]
                 ext  = post["ext"]
                 orig = html.unescape(post.get("filename", str(tim)))
@@ -367,11 +367,15 @@ def scrape_thread(board: str, thread_no: int, cfg: dict,
                 # Sanitise filename
                 dest_name = re.sub(r'[<>:"/\\|?*]', "_", dest_name)
                 dest = img_dir / dest_name
+                # Files saved before the tim prefix existed count as present
+                legacy = img_dir / re.sub(r'[<>:"/\\|?*]', "_", f"{orig}{ext}")
+                if legacy.exists():
+                    continue
                 img_url = f"{IMG_BASE}/{board}/{tim}{ext}"
                 img_get(img_url, dest, cfg["request_delay"])
 
     # ---- Download external files ----
-    if cfg.get("save_external_files", False):
+    if new_posts and cfg.get("save_external_files", False):
         external_domains = cfg.get("external_domains", [])
         max_external = cfg.get("max_external_files_per_thread", 0)
 
@@ -414,7 +418,8 @@ def scrape_thread(board: str, thread_no: int, cfg: dict,
                     img_get(url, dest_path, cfg["request_delay"])
 
     # Update state
-    board_state[str(thread_no)] = posts[-1]["no"]
+    if new_posts:
+        board_state[str(thread_no)] = posts[-1]["no"]
 
 
 def scrape_board(board: str, cfg: dict, archive_dir: Path, state: dict) -> None:
