@@ -125,14 +125,21 @@ def load_config(path: Optional[str]) -> dict:
 def load_state(state_path: Path) -> dict:
     """Load seen-post tracking state from disk."""
     if state_path.exists():
-        with open(state_path, "r", encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with open(state_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError) as exc:
+            log.error("CORRUPT STATE %s (%s) — starting with empty state",
+                      state_path, exc)
     return {}   # { board: { thread_no: last_seen_post_no } }
 
 
 def save_state(state: dict, state_path: Path) -> None:
-    with open(state_path, "w", encoding="utf-8") as f:
+    # Atomic write: a crash mid-write must not corrupt the state file
+    tmp = state_path.with_suffix(state_path.suffix + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2)
+    os.replace(tmp, state_path)
 
 
 def clean_html(text: str) -> str:

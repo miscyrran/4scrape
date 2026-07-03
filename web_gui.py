@@ -91,18 +91,29 @@ DEFAULT_CONFIG = {
 
 # ── Config I/O ────────────────────────────────────────────────────────────────
 
+def _atomic_write_json(path: Path, obj):
+    """Write JSON to a temp file in the same directory, then os.replace() so a
+    crash / power loss / full disk mid-write can never corrupt the target."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(obj, f, indent=2, default=str)
+    os.replace(tmp, path)
+
 def load_cfg() -> dict:
     cfg = dict(DEFAULT_CONFIG)
     if CONFIG_PATH.exists():
-        with open(CONFIG_PATH, encoding="utf-8") as f:
-            cfg.update({k: v for k, v in json.load(f).items()
-                        if not k.startswith("_")})
+        try:
+            with open(CONFIG_PATH, encoding="utf-8") as f:
+                cfg.update({k: v for k, v in json.load(f).items()
+                            if not k.startswith("_")})
+        except (json.JSONDecodeError, OSError) as exc:
+            log.error("CORRUPT CONFIG %s (%s) — falling back to defaults",
+                      CONFIG_PATH, exc)
     return cfg
 
 def save_cfg(cfg: dict):
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump({k: v for k, v in cfg.items() if not k.startswith("_")},
-                  f, indent=2)
+    _atomic_write_json(CONFIG_PATH,
+                       {k: v for k, v in cfg.items() if not k.startswith("_")})
 
 # ── Thread list I/O ───────────────────────────────────────────────────────────
 
@@ -110,13 +121,16 @@ _threads_lock = threading.Lock()
 
 def load_threads() -> list:
     if THREADS_PATH.exists():
-        with open(THREADS_PATH, encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with open(THREADS_PATH, encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError) as exc:
+            log.error("CORRUPT THREAD LIST %s (%s) — treating as empty",
+                      THREADS_PATH, exc)
     return []
 
 def save_threads(threads: list):
-    with open(THREADS_PATH, "w", encoding="utf-8") as f:
-        json.dump(threads, f, indent=2, default=str)
+    _atomic_write_json(THREADS_PATH, threads)
 
 # ── URL parsing ───────────────────────────────────────────────────────────────
 
