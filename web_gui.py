@@ -385,6 +385,14 @@ def scrape_thread_entry(t: dict, cfg: dict) -> tuple:
                         for link in links:
                             external_links.append((link, post["no"]))
 
+                # Dedupe by URL (keeping order) BEFORE applying the limit,
+                # so a link quoted repeatedly can't exhaust it on duplicates
+                seen_urls = set()
+                external_links = [
+                    (url, post_no) for url, post_no in external_links
+                    if not (url in seen_urls or seen_urls.add(url))
+                ]
+
                 # Apply limit
                 if max_external > 0:
                     external_links = external_links[:max_external]
@@ -394,13 +402,7 @@ def scrape_thread_entry(t: dict, cfg: dict) -> tuple:
                     img_dir = thread_dir / "images"
                     img_dir.mkdir(exist_ok=True)
 
-                    # Track URLs we've already seen to avoid duplicates
-                    seen_urls = set()
                     for idx, (url, post_no) in enumerate(external_links, start=1):
-                        if url in seen_urls:
-                            continue
-                        seen_urls.add(url)
-
                         # Extract filename from URL
                         filename = url.split("/")[-1].split("?")[0]
                         if not filename:
