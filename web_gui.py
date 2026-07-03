@@ -132,6 +132,23 @@ def load_threads() -> list:
 def save_threads(threads: list):
     _atomic_write_json(THREADS_PATH, threads)
 
+def update_thread(tid: str, new_data: dict):
+    """Merge one thread's updated dict into the list on disk by id.
+
+    Long scrapes must never write back a whole stale list (it would delete
+    threads added mid-cycle) — re-load under the lock and replace only the
+    entry we scraped. Must NOT be called while holding _threads_lock.
+    """
+    with _threads_lock:
+        ts = load_threads()
+        for i, t in enumerate(ts):
+            if t["id"] == tid:
+                ts[i] = new_data
+                break
+        else:
+            return  # thread was removed mid-scrape — don't resurrect it
+        save_threads(ts)
+
 # ── URL parsing ───────────────────────────────────────────────────────────────
 
 def parse_4chan_url(url: str) -> Optional[tuple]:
@@ -451,11 +468,9 @@ def run_all_threads():
         with _threads_lock:
             threads = load_threads()
 
-        updated        = []
         all_discovered = []
         for t in threads:
             if t.get("status") == "404" or t.get("user_archived"):
-                updated.append(t)
                 continue
             log.info("  /%s/ thread %d", t["board"], t["thread_no"])
             try:
@@ -463,11 +478,11 @@ def run_all_threads():
                 all_discovered.extend(discovered)
             except Exception as exc:
                 log.error("  Error: %s", exc, exc_info=True)
-            updated.append(t)
+            # Merge-by-id save per thread: never write back the stale list
+            # (would delete threads added mid-cycle), and a crash mid-cycle
+            # loses at most the current thread's progress.
+            update_thread(t["id"], t)
             time.sleep(cfg.get("request_delay", 1.0))
-
-        with _threads_lock:
-            save_threads(updated)
 
         for board, thread_no in all_discovered:
             try:
@@ -533,11 +548,10 @@ def _auto_add_thread(board: str, thread_no: int, cfg: dict, source: str = "follo
         c = load_cfg()
         with _threads_lock:
             current = load_threads()
-        idx = next((i for i, t in enumerate(current) if t["id"] == tid), None)
-        if idx is not None:
-            current[idx], _ = scrape_thread_entry(current[idx], c)
-            with _threads_lock:
-                save_threads(current)
+        entry = next((t for t in current if t["id"] == tid), None)
+        if entry is not None:
+            entry, _ = scrape_thread_entry(entry, c)
+            update_thread(tid, entry)
 
     threading.Thread(target=_initial_scrape, daemon=True,
                      name=f"auto-scrape-{tid}").start()
@@ -691,11 +705,10 @@ def api_add_thread():
         cfg = load_cfg()
         with _threads_lock:
             ts = load_threads()
-        idx = next((i for i, t in enumerate(ts) if t["id"] == tid), None)
-        if idx is not None:
-            ts[idx], _ = scrape_thread_entry(ts[idx], cfg)
-            with _threads_lock:
-                save_threads(ts)
+        entry = next((t for t in ts if t["id"] == tid), None)
+        if entry is not None:
+            entry, _ = scrape_thread_entry(entry, cfg)
+            update_thread(tid, entry)
 
     threading.Thread(target=_initial_scrape, daemon=True).start()
     return jsonify(new_t), 201
@@ -744,11 +757,10 @@ def api_scrape_one(tid: str):
     def _run():
         with _threads_lock:
             ts = load_threads()
-        idx = next((i for i, t in enumerate(ts) if t["id"] == tid), None)
-        if idx is not None:
-            ts[idx], _ = scrape_thread_entry(ts[idx], cfg)
-            with _threads_lock:
-                save_threads(ts)
+        entry = next((t for t in ts if t["id"] == tid), None)
+        if entry is not None:
+            entry, _ = scrape_thread_entry(entry, cfg)
+            update_thread(tid, entry)
 
     threading.Thread(target=_run, daemon=True).start()
     return jsonify({"ok": True})
