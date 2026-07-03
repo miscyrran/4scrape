@@ -1545,7 +1545,9 @@ def archive_img(board: str, thread_no: int, filename: str):
     if not img.exists() or not img.is_file():
         return "Not found", 404
     mime = mimetypes.guess_type(safe)[0] or "application/octet-stream"
-    return send_file(img, mimetype=mime)
+    # conditional=True enables Range requests — required for video seeking
+    # and for Safari/iOS to play .webm/.mp4 at all
+    return send_file(img, mimetype=mime, conditional=True)
 
 
 @app.route("/archive-metadata/<board>/<int:thread_no>/<path:filename>")
