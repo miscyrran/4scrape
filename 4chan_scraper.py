@@ -210,16 +210,28 @@ def slugify(text: str, maxlen: int = 60) -> str:
     return text[:maxlen]
 
 
-def api_get(url: str, delay: float, retries: int = 3) -> Optional[dict]:
-    """GET a 4chan API URL, respecting rate limits and retrying on 429/5xx."""
+def api_get(url: str, delay: float, retries: int = 3,
+            if_modified_since: Optional[str] = None) -> tuple:
+    """GET a 4chan API URL, respecting rate limits and retrying on 429/5xx.
+
+    Returns (status, data, last_modified) with status one of
+    "ok" / "not_modified" / "404" / "error"; last_modified is the
+    Last-Modified response header (200 only).
+    """
+    headers = dict(HEADERS)
+    if if_modified_since:
+        headers["If-Modified-Since"] = if_modified_since
     for attempt in range(retries):
         try:
-            resp = requests.get(url, headers=HEADERS, timeout=15)
+            resp = requests.get(url, headers=headers, timeout=15)
             if resp.status_code == 200:
-                return resp.json()
+                return "ok", resp.json(), resp.headers.get("Last-Modified")
+            elif resp.status_code == 304:
+                log.debug("304 — not modified: %s", url)
+                return "not_modified", None, None
             elif resp.status_code == 404:
                 log.debug("404 — thread/board gone: %s", url)
-                return None
+                return "404", None, None
             elif resp.status_code == 429:
                 wait = 30 * (attempt + 1)
                 log.warning("Rate-limited (429). Waiting %d s …", wait)
@@ -230,7 +242,7 @@ def api_get(url: str, delay: float, retries: int = 3) -> Optional[dict]:
         except requests.RequestException as exc:
             log.warning("Request error (%s). Attempt %d/%d", exc, attempt + 1, retries)
             time.sleep(delay * 3)
-    return None
+    return "error", None, None
 
 
 def img_get(url: str, dest: Path, delay: float) -> bool:
@@ -306,9 +318,19 @@ def scrape_thread(board: str, thread_no: int, cfg: dict,
                   board_dir: Path, state: dict) -> None:
     """Fetch and archive a single thread."""
     url  = f"{API_BASE}/{board}/thread/{thread_no}.json"
-    data = api_get(url, cfg["request_delay"])
+    # Per-thread Last-Modified cache lives under a reserved "_last_modified"
+    # key in the state file (board names are alphanumeric, so no collision)
+    lm_map = state.setdefault("_last_modified", {})
+    lm_key = f"{board}/{thread_no}"
+    status, data, last_modified = api_get(url, cfg["request_delay"],
+                                          if_modified_since=lm_map.get(lm_key))
+    if status == "not_modified":
+        log.debug("/%s/ thread %d — not modified, skipping", board, thread_no)
+        return
     if not data:
         return
+    if last_modified:
+        lm_map[lm_key] = last_modified
 
     posts = data.get("posts", [])
     if not posts:
@@ -433,7 +455,7 @@ def scrape_board(board: str, cfg: dict, archive_dir: Path, state: dict) -> None:
     """Fetch catalog for a board and scrape matching threads."""
     log.info("Fetching catalog for /%s/ …", board)
     url  = f"{API_BASE}/{board}/catalog.json"
-    data = api_get(url, cfg["catalog_delay"])
+    _status, data, _lm = api_get(url, cfg["catalog_delay"])
     if not data:
         log.warning("Could not fetch catalog for /%s/", board)
         return

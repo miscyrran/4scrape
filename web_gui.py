@@ -165,19 +165,28 @@ def parse_4chan_url(url: str) -> Optional[tuple]:
 
 # ── Scraping utilities (adapted from 4chan_scraper.py) ────────────────────────
 
-def _api_get(url: str, retries: int = 3) -> tuple:
-    """GET a 4chan API URL. Returns (status, data) where status is one of:
-    "ok"    — HTTP 200, data is the parsed JSON
-    "404"   — genuine HTTP 404, data is None
-    "error" — network failure / retries exhausted, data is None
+def _api_get(url: str, retries: int = 3,
+             if_modified_since: Optional[str] = None) -> tuple:
+    """GET a 4chan API URL. Returns (status, data, last_modified) where
+    status is one of:
+    "ok"           — HTTP 200, data is the parsed JSON
+    "not_modified" — HTTP 304 (If-Modified-Since matched), data is None
+    "404"          — genuine HTTP 404, data is None
+    "error"        — network failure / retries exhausted, data is None
+    last_modified is the Last-Modified response header (200 only).
     """
+    headers = dict(HTTP_HEADERS)
+    if if_modified_since:
+        headers["If-Modified-Since"] = if_modified_since
     for attempt in range(retries):
         try:
-            r = requests.get(url, headers=HTTP_HEADERS, timeout=15)
+            r = requests.get(url, headers=headers, timeout=15)
             if r.status_code == 200:
-                return "ok", r.json()
+                return "ok", r.json(), r.headers.get("Last-Modified")
+            if r.status_code == 304:
+                return "not_modified", None, None
             if r.status_code == 404:
-                return "404", None
+                return "404", None, None
             if r.status_code == 429:
                 time.sleep(30 * (attempt + 1))
             else:
@@ -185,7 +194,7 @@ def _api_get(url: str, retries: int = 3) -> tuple:
         except requests.RequestException as exc:
             log.warning("API error: %s", exc)
             time.sleep(3)
-    return "error", None
+    return "error", None, None
 
 def _clean_html(text: str) -> str:
     if not text:
@@ -306,7 +315,14 @@ def scrape_thread_entry(t: dict, cfg: dict) -> tuple:
     delay     = cfg.get("request_delay", 1.0)
     archive   = Path(cfg.get("output_dir", "4chan_archive"))
 
-    status, data = _api_get(f"{API_BASE}/{board}/thread/{thread_no}.json")
+    status, data, last_modified = _api_get(
+        f"{API_BASE}/{board}/thread/{thread_no}.json",
+        if_modified_since=t.get("last_modified"))
+    if status == "not_modified":
+        # Nothing changed since our stored Last-Modified — no work this cycle
+        log.debug("/%s/%d not modified — skipping", board, thread_no)
+        t["last_scraped"] = datetime.utcnow().isoformat() + "Z"
+        return t, []
     if status == "404":
         t["status"] = "404"
         if cfg.get("auto_archive_on_404", True):
@@ -316,6 +332,8 @@ def scrape_thread_entry(t: dict, cfg: dict) -> tuple:
         # Network failure — leave the thread untouched and retry next cycle
         log.warning("Fetch failed for /%s/%d — will retry next cycle", board, thread_no)
         return t, []
+    if last_modified:
+        t["last_modified"] = last_modified
 
     posts = data.get("posts", [])
     if not posts:
@@ -599,7 +617,7 @@ def _scan_catalogs_for_patterns(cfg: dict) -> list:
     # Fetch catalogs once per board
     for board in sorted(boards_to_scan):
         url = f"{API_BASE}/{board}/catalog.json"
-        _status, data = _api_get(url)
+        _status, data, _lm = _api_get(url)
         if data:
             threads = []
             for page in data:
@@ -909,7 +927,7 @@ def api_debug_follow(board: str, thread_no: int):
     keywords = [kw.lower() for kw in cfg.get("follow_keywords", []) if kw.strip()]
     allow_cross = cfg.get("follow_cross_board", False)
 
-    _status, data = _api_get(f"{API_BASE}/{board}/thread/{thread_no}.json")
+    _status, data, _lm = _api_get(f"{API_BASE}/{board}/thread/{thread_no}.json")
     if data is None:
         return jsonify({"error": "Thread not found or 404"}), 404
 
