@@ -667,8 +667,12 @@ def _scan_catalogs_for_patterns(cfg: dict) -> list:
                 log.info("  Pattern '%s' matched: /%s/%d", name_pattern, board, thread_no)
                 break  # Only add first match per pattern per cycle
 
-    # Save updated patterns back to config
-    save_cfg(cfg)
+    # Save updated patterns back to config. Re-load first and update only
+    # thread_patterns — writing back the cfg loaded at cycle start would
+    # revert any settings the user saved while the cycle was running.
+    fresh = load_cfg()
+    fresh["thread_patterns"] = cfg["thread_patterns"]
+    save_cfg(fresh)
 
     return list(discovered.keys())
 
