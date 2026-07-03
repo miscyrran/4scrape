@@ -25,7 +25,7 @@ import os
 import re
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -290,7 +290,7 @@ def matches_keywords(thread: dict, keywords: list[str]) -> bool:
 def format_post(post: dict) -> str:
     """Render a single post as plain text."""
     lines = []
-    ts = datetime.utcfromtimestamp(post.get("time", 0)).strftime("%Y-%m-%d %H:%M:%S UTC")
+    ts = datetime.fromtimestamp(post.get("time", 0), timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     no   = post.get("no", "?")
     name = post.get("name", "Anonymous")
     trip = post.get("trip", "")
@@ -365,7 +365,7 @@ def scrape_thread(board: str, thread_no: int, cfg: dict,
                 f.write(f"Board: /{board}/\n")
                 f.write(f"Thread: {thread_no}\n")
                 f.write(f"Subject: {clean_html(op.get('sub') or '(no subject)')}\n")
-                f.write(f"Archived: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}\n")
+                f.write(f"Archived: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n")
                 f.write("=" * 70 + "\n\n")
             for post in new_posts:
                 f.write(format_post(post))
@@ -495,7 +495,7 @@ def scrape_board(board: str, cfg: dict, archive_dir: Path, state: dict) -> None:
 def run_cycle(cfg: dict, archive_dir: Path, state_path: Path) -> None:
     """One full scrape cycle across all configured boards."""
     log.info("=" * 60)
-    log.info("Starting scrape cycle  %s", datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"))
+    log.info("Starting scrape cycle  %s", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"))
     log.info("=" * 60)
 
     state = load_state(state_path)

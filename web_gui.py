@@ -24,7 +24,7 @@ import shutil
 import sys
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote as url_quote
@@ -88,6 +88,11 @@ DEFAULT_CONFIG = {
     "auto_archive_on_4chan_archive": True,
     "thread_patterns":       [],
 }
+
+def _utc_now_iso() -> str:
+    """UTC timestamp with the trailing 'Z' the frontend's Date() parsing
+    has always received (aware isoformat() would emit '+00:00')."""
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 # ── Config I/O ────────────────────────────────────────────────────────────────
 
@@ -286,7 +291,7 @@ def _slugify(text: str, maxlen: int = 60) -> str:
     return text[:maxlen]
 
 def _format_post(post: dict) -> str:
-    ts   = datetime.utcfromtimestamp(post.get("time", 0)).strftime("%Y-%m-%d %H:%M:%S UTC")
+    ts   = datetime.fromtimestamp(post.get("time", 0), timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     no   = post.get("no", "?")
     name = post.get("name", "Anonymous")
     trip = post.get("trip", "")
@@ -321,7 +326,7 @@ def scrape_thread_entry(t: dict, cfg: dict) -> tuple:
     if status == "not_modified":
         # Nothing changed since our stored Last-Modified — no work this cycle
         log.debug("/%s/%d not modified — skipping", board, thread_no)
-        t["last_scraped"] = datetime.utcnow().isoformat() + "Z"
+        t["last_scraped"] = _utc_now_iso()
         return t, []
     if status == "404":
         t["status"] = "404"
@@ -480,7 +485,7 @@ def scrape_thread_entry(t: dict, cfg: dict) -> tuple:
     # Update stats
     t["title"]        = title or t.get("title") or f"Thread {thread_no}"
     t["post_count"]   = len(posts)
-    t["last_scraped"] = datetime.utcnow().isoformat() + "Z"
+    t["last_scraped"] = _utc_now_iso()
     t["status"]       = "archived" if op.get("archived") else "active"
     if t["status"] == "archived" and cfg.get("auto_archive_on_4chan_archive", True):
         t["user_archived"] = True
@@ -545,8 +550,8 @@ def run_all_threads():
 
         interval = cfg.get("interval_minutes", 30)
         _run_state["next_run_ts"] = (
-            datetime.utcnow() + timedelta(minutes=interval)
-        ).isoformat() + "Z"
+            datetime.now(timezone.utc) + timedelta(minutes=interval)
+        ).isoformat().replace("+00:00", "Z")
         log.info("── Cycle complete. Next run at %s ──", _run_state["next_run_ts"])
     finally:
         _run_state["running"] = False
@@ -574,7 +579,7 @@ def _auto_add_thread(board: str, thread_no: int, cfg: dict, source: str = "follo
             "last_scraped":   None,
             "last_seen_post": 0,
             "status":         "pending",
-            "added_at":       datetime.utcnow().isoformat() + "Z",
+            "added_at":       _utc_now_iso(),
         }
         if cfg.get("follow_tag_auto_added", True):
             if source == "named_discovery":
@@ -675,8 +680,8 @@ def start_scheduler(interval: int):
     scheduled job instead of leaking a new daemon thread each time."""
     global _scheduler_thread
     _run_state["next_run_ts"] = (
-        datetime.utcnow() + timedelta(minutes=interval)
-    ).isoformat() + "Z"
+        datetime.now(timezone.utc) + timedelta(minutes=interval)
+    ).isoformat().replace("+00:00", "Z")
     schedule.clear()
     schedule.every(interval).minutes.do(run_all_threads)
 
@@ -746,7 +751,7 @@ def api_add_thread():
             "last_scraped":   None,
             "last_seen_post": 0,
             "status":         "pending",
-            "added_at":       datetime.utcnow().isoformat() + "Z",
+            "added_at":       _utc_now_iso(),
         }
         threads.append(new_t)
         save_threads(threads)
@@ -840,7 +845,7 @@ def api_add_pattern():
         "name_pattern": name_pattern,
         "enabled": True,
         "last_discovered": None,
-        "added_at": datetime.utcnow().isoformat() + "Z",
+        "added_at": _utc_now_iso(),
     }
 
     patterns.append(new_pattern)
@@ -1032,7 +1037,7 @@ def archive_view(board: str, thread_no: int):
             no   = p.get("no", "?")
             name = html_lib.escape(p.get("name") or "Anonymous")
             trip = html_lib.escape(p.get("trip") or "")
-            ts   = datetime.utcfromtimestamp(p.get("time", 0)).strftime("%Y-%m-%d %H:%M:%S UTC")
+            ts   = datetime.fromtimestamp(p.get("time", 0), timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
             sub  = html_lib.unescape(re.sub(r"<[^>]+>", "", p.get("sub") or ""))
             com = p.get("com") or ""
             # Preserve quotelinks before stripping all other tags
