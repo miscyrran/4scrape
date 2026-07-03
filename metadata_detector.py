@@ -4,12 +4,15 @@ Detects and extracts Stable Diffusion metadata from images
 """
 import json
 import gzip
+import logging
 import struct
 import zlib
 from pathlib import Path
 from typing import Optional, Dict, Any
 from PIL import Image
 import re
+
+log = logging.getLogger("metadata_detector")
 
 
 # Real PNG text chunks are tiny; a crafted file can declare a ~4 GB chunk
@@ -56,8 +59,8 @@ def read_png_chunks(filepath: Path) -> dict:
                             keyword = data[:null_pos].decode('latin1')
                             text = data[null_pos+1:].decode('utf-8', errors='ignore')
                             chunks[keyword] = text
-                    except:
-                        pass
+                    except Exception as exc:
+                        log.debug("tEXt chunk parse failed in %s: %s", filepath, exc)
 
                 elif chunk_type == 'zTXt':
                     try:
@@ -68,8 +71,8 @@ def read_png_chunks(filepath: Path) -> dict:
                             compressed_data = data[null_pos+2:]
                             text = zlib.decompress(compressed_data).decode('utf-8', errors='ignore')
                             chunks[keyword] = text
-                    except:
-                        pass
+                    except Exception as exc:
+                        log.debug("zTXt chunk parse failed in %s: %s", filepath, exc)
 
                 elif chunk_type == 'iTXt':
                     try:
@@ -90,11 +93,12 @@ def read_png_chunks(filepath: Path) -> dict:
                             if compression_flag == 1:
                                 text_data = zlib.decompress(text_data)
                             chunks[keyword] = text_data.decode('utf-8', errors='ignore')
-                    except:
-                        pass
+                    except Exception as exc:
+                        log.debug("iTXt chunk parse failed in %s: %s", filepath, exc)
 
             return chunks
-    except Exception as e:
+    except Exception as exc:
+        log.debug("PNG chunk read failed for %s: %s", filepath, exc)
         return {}
 
 
@@ -254,8 +258,8 @@ def extract_metadata(filepath: Path) -> Optional[str]:
                     comment_data = json.loads(chunks['Comment'])
                     source = chunks.get('Source', 'Unknown')
                     return f"Version: {source}\n\n{json.dumps(comment_data, indent=2)}"
-                except:
-                    pass
+                except Exception as exc:
+                    log.debug("NovelAI Comment parse failed in %s: %s", filepath, exc)
 
             # A1111 format
             if 'parameters' in chunks:
@@ -285,8 +289,8 @@ def extract_metadata(filepath: Path) -> Optional[str]:
         if stealth_data:
             return stealth_data
 
-    except Exception as e:
-        pass
+    except Exception as exc:
+        log.debug("Metadata extraction failed for %s: %s", filepath, exc)
 
     return None
 
@@ -326,8 +330,8 @@ def load_metadata_cache(thread_dir: Path) -> Dict[str, bool]:
         try:
             with open(cache_file, 'r') as f:
                 return json.load(f)
-        except:
-            pass
+        except Exception as exc:
+            log.debug("Metadata cache load failed for %s: %s", cache_file, exc)
     return {}
 
 
@@ -337,8 +341,8 @@ def save_metadata_cache(thread_dir: Path, cache: Dict[str, bool]):
     try:
         with open(cache_file, 'w') as f:
             json.dump(cache, f, indent=2)
-    except:
-        pass
+    except Exception as exc:
+        log.debug("Metadata cache save failed for %s: %s", cache_file, exc)
 
 
 def get_thread_metadata_status(thread_dir: Path, force_rescan: bool = False) -> Dict[str, bool]:
