@@ -974,9 +974,17 @@ def api_run_now():
     threading.Thread(target=run_all_threads, daemon=True).start()
     return jsonify({"ok": True})
 
+def _valid_board(board: str) -> bool:
+    """Guard filesystem paths built from the <board> route segment —
+    Flask blocks '/' in segments but not '..'."""
+    return bool(re.fullmatch(r"[a-z0-9]{1,10}", board))
+
+
 @app.route("/archive/<board>/<int:thread_no>")
 def archive_view(board: str, thread_no: int):
     """Render the locally-archived version of a thread."""
+    if not _valid_board(board):
+        return "Not found", 404
     cfg        = load_cfg()
     archive    = Path(cfg.get("output_dir", "4chan_archive"))
     board_dir  = archive / board
@@ -1535,6 +1543,8 @@ def archive_img(board: str, thread_no: int, filename: str):
     """Serve a locally-archived image file."""
     import mimetypes
     from flask import send_file
+    if not _valid_board(board):
+        return "Not found", 404
     cfg       = load_cfg()
     archive   = Path(cfg.get("output_dir", "4chan_archive"))
     board_dir = archive / board
@@ -1555,6 +1565,8 @@ def archive_img(board: str, thread_no: int, filename: str):
 @app.route("/archive-metadata/<board>/<int:thread_no>/<path:filename>")
 def archive_metadata(board: str, thread_no: int, filename: str):
     """Extract and return SD metadata from an archived image."""
+    if not _valid_board(board):
+        return jsonify({"error": "Thread not found"}), 404
     cfg       = load_cfg()
     archive   = Path(cfg.get("output_dir", "4chan_archive"))
     board_dir = archive / board
