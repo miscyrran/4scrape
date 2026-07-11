@@ -1222,7 +1222,9 @@ header{{background:var(--surface);border-bottom:1px solid var(--border);
 main{{max-width:860px;margin:0 auto;padding:1.4rem 1.2rem}}
 .thread-info{{background:var(--surface);border:1px solid var(--border);
                border-radius:8px;padding:.9rem 1.1rem;margin-bottom:1.2rem;
-               font-size:.82rem;color:var(--muted)}}
+               font-size:.82rem;color:var(--muted);
+               position:sticky;top:calc(var(--hdr-h,56px) + .5rem);z-index:90;
+               box-shadow:0 4px 12px rgba(0,0,0,.35)}}
 .thread-info strong{{color:var(--text)}}
 .posts{{display:flex;flex-direction:column;gap:.85rem}}
 .post{{background:var(--surface);border:1px solid var(--border);
@@ -1415,6 +1417,14 @@ main{{max-width:860px;margin:0 auto;padding:1.4rem 1.2rem}}
   {body}
 </main>
 <script>
+// Keep the floating thread-info bar just below the sticky header
+const _hdr = document.querySelector('header');
+function syncHdrHeight() {{
+  document.documentElement.style.setProperty('--hdr-h', _hdr.offsetHeight + 'px');
+}}
+syncHdrHeight();
+window.addEventListener('resize', syncHdrHeight);
+
 // Image expansion
 document.querySelectorAll('.post-img img').forEach(img => {{
   img.addEventListener('click', () => img.classList.toggle('expanded'));
