@@ -1058,6 +1058,8 @@ def archive_view(board: str, thread_no: int):
     posts_txt   = thread_dir / "posts.txt"   if thread_dir else None
 
     live_url = f"https://boards.4chan.org/{board}/thread/{thread_no}"
+    media_items: list = []
+    view_toggle_html = ""
 
     if thread_json and thread_json.exists():
         with open(thread_json, encoding="utf-8") as f:
@@ -1089,6 +1091,9 @@ def archive_view(board: str, thread_no: int):
                     _m = re.match(r'^(\d+)_(\d+)_(.+)$', _f.name)
                     if _m:
                         external_files_map.setdefault(int(_m.group(1)), []).append(_f.name)
+
+        # Every image/video rendered below is also collected into media_items,
+        # in post order, to build the contact-sheet view and its lightbox.
 
         def render_post(p):
             no   = p.get("no", "?")
@@ -1139,6 +1144,16 @@ def archive_view(board: str, thread_no: int):
                             f'title="SD metadata detected - click to view">SD</span>'
                         )
 
+                    media_items.append({
+                        "src":      src_url,
+                        "name":     orig,
+                        "post_no":  no,
+                        "video":    ext_lower in (".webm", ".mp4"),
+                        "meta_url": (f"/archive-metadata/{board}/{thread_no}/{url_quote(orig)}"
+                                     if has_metadata else None),
+                        "source":   "post",
+                    })
+
                     if ext_lower in (".webm", ".mp4"):
                         img_html = (
                             f'<div class="post-img">'
@@ -1173,6 +1188,18 @@ def archive_view(board: str, thread_no: int):
                             f'data-metadata-url="{meta_url}" '
                             f'title="SD metadata detected - click to view">SD</span>'
                         )
+                    if ext_lower in (".webm", ".mp4", ".jpg", ".jpeg", ".png",
+                                     ".gif", ".webp"):
+                        media_items.append({
+                            "src":      src_url,
+                            "name":     display_name,
+                            "post_no":  no,
+                            "video":    ext_lower in (".webm", ".mp4"),
+                            "meta_url": (f"/archive-metadata/{board}/{thread_no}/{url_quote(fname)}"
+                                         if has_meta else None),
+                            "source":   "external",
+                        })
+
                     if ext_lower in (".webm", ".mp4"):
                         ext_parts.append(
                             f'<div class="post-img ext-file">'
@@ -1228,7 +1255,45 @@ def archive_view(board: str, thread_no: int):
             )
 
         posts_html = "\n".join(render_post(p) for p in posts)
-        body = f'<div class="posts">{posts_html}</div>'
+
+        # Contact sheet — every image/video in the thread as a grid of tiles.
+        if media_items:
+            tiles = []
+            for idx, m in enumerate(media_items):
+                badge = ('<span class="sheet-sd">SD</span>' if m["meta_url"] else "")
+                ext_tag = ('<span class="sheet-ext">EXT</span>'
+                           if m["source"] == "external" else "")
+                if m["video"]:
+                    inner = (f'<video muted preload="metadata" '
+                             f'src="{m["src"]}#t=0.1"></video>'
+                             f'<span class="sheet-play">&#9654;</span>')
+                else:
+                    inner = (f'<img src="{m["src"]}" loading="lazy" '
+                             f'alt="{html_lib.escape(m["name"])}">')
+                tiles.append(
+                    f'<button class="sheet-tile" data-idx="{idx}" '
+                    f'title="{html_lib.escape(m["name"])}">'
+                    f'{inner}{badge}{ext_tag}'
+                    f'<span class="sheet-cap">#{m["post_no"]}</span>'
+                    f'</button>'
+                )
+            sheet_html = (
+                f'<div class="sheet-count">{len(media_items)} file(s)</div>'
+                '<div class="sheet-grid">' + "\n".join(tiles) + '</div>'
+            )
+        else:
+            sheet_html = ('<div class="not-found"><h2>No images</h2>'
+                          '<p>Nothing has been downloaded for this thread yet.</p></div>')
+
+        body = (f'<div class="posts" id="view-posts">{posts_html}</div>'
+                f'<div class="sheet" id="view-sheet" hidden>{sheet_html}</div>')
+        view_toggle_html = (
+            '<span class="view-toggle">'
+            '<button id="btn-view-posts" class="active" onclick="setView(\'posts\')">Posts</button>'
+            '<button id="btn-view-sheet" onclick="setView(\'sheet\')">'
+            f'Contact sheet ({len(media_items)})</button>'
+            '</span> &nbsp;·&nbsp;'
+        )
     elif posts_txt and posts_txt.exists():
         with open(posts_txt, encoding="utf-8") as f:
             raw = html_lib.escape(f.read())
@@ -1241,6 +1306,10 @@ def archive_view(board: str, thread_no: int):
                  f'<p>No local archive found for /{board}/{thread_no}.</p>'
                  f'<p><a href="{live_url}" target="_blank" rel="noopener">View on 4chan &#8599;</a></p>'
                  '</div>')
+
+    # Embedded for the contact-sheet lightbox. The "</" escape keeps a
+    # filename containing "</script>" from closing the tag early.
+    media_json = json.dumps(media_items).replace("</", "<\\/")
 
     page = f"""<!DOCTYPE html>
 <html lang="en">
@@ -1436,6 +1505,64 @@ main{{max-width:860px;margin:0 auto;padding:1.4rem 1.2rem}}
   background:#22d55e;
   transform:translateY(-1px);
 }}
+[hidden]{{display:none !important}}
+
+/* ── View switcher ── */
+.view-toggle{{display:inline-flex;border:1px solid var(--border);border-radius:6px;
+               overflow:hidden;margin-left:.2rem;vertical-align:middle}}
+.view-toggle button{{background:var(--surface2);color:var(--muted);border:none;
+                      font:inherit;font-size:.78rem;padding:.22rem .6rem;
+                      cursor:pointer;transition:all .15s}}
+.view-toggle button+button{{border-left:1px solid var(--border)}}
+.view-toggle button.active{{background:var(--accent);color:#fff}}
+
+/* ── Contact sheet ── */
+.sheet-count{{font-size:.78rem;color:var(--muted);margin-bottom:.6rem}}
+.sheet-grid{{display:grid;gap:.5rem;
+              grid-template-columns:repeat(auto-fill,minmax(150px,1fr))}}
+.sheet-tile{{position:relative;padding:0;border:1px solid var(--border);
+              border-radius:6px;overflow:hidden;background:var(--surface);
+              cursor:pointer;aspect-ratio:1;display:block;
+              transition:border-color .15s,transform .1s}}
+.sheet-tile:hover{{border-color:var(--accent);transform:translateY(-2px)}}
+.sheet-tile img,.sheet-tile video{{width:100%;height:100%;object-fit:cover;
+                                     display:block;background:#000}}
+.sheet-cap{{position:absolute;bottom:0;left:0;right:0;font-size:.65rem;
+             font-family:'Courier New',monospace;color:#ccc;
+             background:rgba(0,0,0,.65);padding:.12rem .3rem;text-align:left}}
+.sheet-sd{{position:absolute;top:4px;left:4px;background:#00cc66;color:#000;
+            font-size:.6rem;font-weight:700;padding:.1rem .28rem;border-radius:3px}}
+.sheet-ext{{position:absolute;top:4px;right:4px;background:var(--blue);color:#000;
+             font-size:.6rem;font-weight:700;padding:.1rem .28rem;border-radius:3px}}
+.sheet-play{{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+              font-size:1.6rem;color:#fff;text-shadow:0 0 8px #000;
+              pointer-events:none}}
+
+/* ── Lightbox ── */
+#lightbox{{position:fixed;inset:0;background:rgba(0,0,0,.93);z-index:9998;
+            display:flex;flex-direction:column;align-items:center;
+            justify-content:center;padding:3rem 3.5rem 2.6rem}}
+.lb-media{{max-width:100%;max-height:100%;display:flex;
+            align-items:center;justify-content:center}}
+#lightbox img,#lightbox video{{max-width:100%;max-height:100%;
+                                object-fit:contain;display:block}}
+.lb-bar{{position:absolute;bottom:.5rem;left:0;right:0;text-align:center;
+          font-size:.75rem;color:var(--muted);
+          font-family:'Courier New',monospace;padding:0 1rem;
+          word-break:break-all}}
+.lb-bar a{{color:var(--blue);text-decoration:none;margin-left:.6rem}}
+.lb-btn{{position:absolute;background:rgba(255,255,255,.08);color:#fff;
+          border:1px solid var(--border);border-radius:6px;cursor:pointer;
+          font-size:1.4rem;line-height:1;padding:.5rem .75rem;
+          transition:background .15s}}
+.lb-btn:hover{{background:rgba(255,255,255,.2)}}
+.lb-prev{{left:.6rem;top:50%;transform:translateY(-50%)}}
+.lb-next{{right:.6rem;top:50%;transform:translateY(-50%)}}
+.lb-close{{right:.6rem;top:.6rem;font-size:1.2rem}}
+.lb-sd{{left:.6rem;top:.6rem;background:#00cc66;color:#000;font-weight:700;
+         font-size:.75rem;border-color:#00cc66}}
+.lb-sd:hover{{background:#22d55e}}
+
 .ext-files{{display:flex;flex-wrap:wrap;gap:.5rem;margin:.4rem 0}}
 .ext-file{{position:relative}}
 .ext-label{{font-size:.7rem;color:var(--muted);margin-bottom:.2rem;
@@ -1458,6 +1585,8 @@ main{{max-width:860px;margin:0 auto;padding:1.4rem 1.2rem}}
     Board: <strong>/{html_lib.escape(board)}/</strong> &nbsp;·&nbsp;
     Thread: <strong>{thread_no}</strong> &nbsp;·&nbsp;
     Archived locally &nbsp;·&nbsp;
+    {view_toggle_html}
+    <span id="filter-controls">
     <label class="metadata-filter">
       <input type="checkbox" id="filter-metadata">
       Show only posts with metadata
@@ -1466,6 +1595,7 @@ main{{max-width:860px;margin:0 auto;padding:1.4rem 1.2rem}}
       <input type="checkbox" id="filter-ext-files">
       Show only posts with downloaded external files
     </label>
+    </span>
   </div>
   {body}
 </main>
@@ -1604,6 +1734,109 @@ const filterCheckbox = document.getElementById('filter-metadata');
 if (filterCheckbox) filterCheckbox.addEventListener('change', applyPostFilters);
 const filterExtCheckbox = document.getElementById('filter-ext-files');
 if (filterExtCheckbox) filterExtCheckbox.addEventListener('change', applyPostFilters);
+
+// ── Contact sheet + lightbox ────────────────────────────────────────────────
+const MEDIA = {media_json};
+
+function setView(view) {{
+  const posts = document.getElementById('view-posts');
+  const sheet = document.getElementById('view-sheet');
+  if (!posts || !sheet) return;
+  const onSheet = view === 'sheet';
+  posts.hidden = onSheet;
+  sheet.hidden = !onSheet;
+  document.getElementById('btn-view-posts').classList.toggle('active', !onSheet);
+  document.getElementById('btn-view-sheet').classList.toggle('active', onSheet);
+  // The post filters only apply to the posts list
+  const fc = document.getElementById('filter-controls');
+  if (fc) fc.style.display = onSheet ? 'none' : '';
+  history.replaceState(null, '', onSheet ? '#sheet' : location.pathname);
+}}
+
+let lbIndex = -1;
+
+function openLightbox(i) {{
+  if (i < 0 || i >= MEDIA.length) return;
+  lbIndex = i;
+  const m = MEDIA[i];
+  let lb = document.getElementById('lightbox');
+  if (!lb) {{
+    lb = document.createElement('div');
+    lb.id = 'lightbox';
+    lb.innerHTML =
+      '<div class="lb-media"></div>' +
+      '<button class="lb-btn lb-prev" title="Previous (&larr;)">&#8249;</button>' +
+      '<button class="lb-btn lb-next" title="Next (&rarr;)">&#8250;</button>' +
+      '<button class="lb-btn lb-close" title="Close (Esc)">&times;</button>' +
+      '<button class="lb-btn lb-sd" hidden>SD</button>' +
+      '<div class="lb-bar"></div>';
+    document.body.appendChild(lb);
+    lb.querySelector('.lb-prev').addEventListener('click', e => {{ e.stopPropagation(); stepLightbox(-1); }});
+    lb.querySelector('.lb-next').addEventListener('click', e => {{ e.stopPropagation(); stepLightbox(1); }});
+    lb.querySelector('.lb-close').addEventListener('click', closeLightbox);
+    lb.querySelector('.lb-sd').addEventListener('click', async e => {{
+      e.stopPropagation();
+      const cur = MEDIA[lbIndex];
+      if (!cur || !cur.meta_url) return;
+      try {{
+        const resp = await fetch(cur.meta_url);
+        const data = await resp.json();
+        if (data.success) showMetadataModal(data.filename, data.metadata);
+        else alert('No metadata found');
+      }} catch (err) {{ alert('Failed to load metadata'); }}
+    }});
+    // Click the backdrop (not the media or a control) to close
+    lb.addEventListener('click', e => {{
+      if (e.target === lb || e.target.classList.contains('lb-media')) closeLightbox();
+    }});
+    document.body.style.overflow = 'hidden';
+  }}
+  const holder = lb.querySelector('.lb-media');
+  holder.innerHTML = '';
+  const el = document.createElement(m.video ? 'video' : 'img');
+  el.src = m.src;
+  if (m.video) {{ el.controls = true; el.autoplay = true; el.loop = true; }}
+  else {{ el.alt = m.name; }}
+  holder.appendChild(el);
+
+  const sdBtn = lb.querySelector('.lb-sd');
+  sdBtn.hidden = !m.meta_url;
+
+  lb.querySelector('.lb-bar').innerHTML =
+    escapeHtml(m.name) + ' &nbsp;·&nbsp; ' + (lbIndex + 1) + ' / ' + MEDIA.length +
+    ' <a href="#p' + m.post_no + '" data-jump="1">jump to post #' + m.post_no + '</a>';
+  lb.querySelector('.lb-bar a').addEventListener('click', () => {{
+    closeLightbox();
+    setView('posts');
+  }});
+}}
+
+function stepLightbox(delta) {{
+  if (lbIndex < 0 || !MEDIA.length) return;
+  openLightbox((lbIndex + delta + MEDIA.length) % MEDIA.length);
+}}
+
+function closeLightbox() {{
+  const lb = document.getElementById('lightbox');
+  if (lb) lb.remove();
+  document.body.style.overflow = '';
+  lbIndex = -1;
+}}
+
+document.querySelectorAll('.sheet-tile').forEach(tile => {{
+  tile.addEventListener('click', () => openLightbox(parseInt(tile.dataset.idx, 10)));
+}});
+
+document.addEventListener('keydown', e => {{
+  if (lbIndex < 0) return;
+  if (e.key === 'ArrowRight')      {{ e.preventDefault(); stepLightbox(1); }}
+  else if (e.key === 'ArrowLeft')  {{ e.preventDefault(); stepLightbox(-1); }}
+  else if (e.key === 'Escape')     {{ closeLightbox(); }}
+  else if (e.key === 'Home')       {{ e.preventDefault(); openLightbox(0); }}
+  else if (e.key === 'End')        {{ e.preventDefault(); openLightbox(MEDIA.length - 1); }}
+}});
+
+if (location.hash === '#sheet') setView('sheet');
 </script>
 </body>
 </html>"""
