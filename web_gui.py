@@ -84,6 +84,9 @@ DEFAULT_CONFIG = {
     "follow_cross_board":    False,
     "follow_tag_auto_added": True,
     "follow_keywords":       ["new thread", "new bread", "bake", "baked"],
+    # When true the scheduler skips cycles and a running cycle stops after
+    # the current thread. Persisted so a pause survives a restart.
+    "paused":                False,
     "auto_archive_on_404":          True,
     "auto_archive_on_4chan_archive": True,
     "thread_patterns":       [],
@@ -502,7 +505,36 @@ def scrape_thread_entry(t: dict, cfg: dict) -> tuple:
 _run_lock  = threading.Lock()
 _run_state = {"running": False, "next_run_ts": None}
 
+# Set = scraping is paused. Checked by the scheduler before each cycle and
+# by the cycle itself between threads, so a pause takes effect promptly
+# without killing an in-flight download.
+_pause_event = threading.Event()
+
+def is_paused() -> bool:
+    return _pause_event.is_set()
+
+def set_paused(paused: bool):
+    """Flip the pause flag and persist it to config."""
+    if paused:
+        _pause_event.set()
+    else:
+        _pause_event.clear()
+    cfg = load_cfg()
+    cfg["paused"] = bool(paused)
+    save_cfg(cfg)
+    if paused:
+        _run_state["next_run_ts"] = None
+    else:
+        _run_state["next_run_ts"] = (
+            datetime.now(timezone.utc)
+            + timedelta(minutes=int(cfg.get("interval_minutes", 30)))
+        ).isoformat().replace("+00:00", "Z")
+    log.info("Scraping %s", "paused" if paused else "resumed")
+
 def run_all_threads():
+    if is_paused():
+        log.info("Scraping is paused — skipping cycle")
+        return
     acquired = _run_lock.acquire(blocking=False)
     if not acquired:
         log.info("Scrape cycle already running — skipping")
@@ -515,7 +547,12 @@ def run_all_threads():
             threads = load_threads()
 
         all_discovered = []
+        paused_mid_cycle = False
         for t in threads:
+            if is_paused():
+                log.info("── Cycle paused — stopping after current thread ──")
+                paused_mid_cycle = True
+                break
             if t.get("status") == "404" or t.get("user_archived"):
                 continue
             log.info("  /%s/ thread %d", t["board"], t["thread_no"])
@@ -537,7 +574,7 @@ def run_all_threads():
                 log.error("Auto-follow error /%s/%d: %s", board, thread_no, exc)
 
         # Named pattern discovery (runs after successor discovery)
-        if cfg.get("thread_patterns"):
+        if cfg.get("thread_patterns") and not paused_mid_cycle:
             try:
                 discovered_named = _scan_catalogs_for_patterns(cfg)
                 for board, thread_no in discovered_named:
@@ -549,10 +586,14 @@ def run_all_threads():
                 log.error("Pattern scanning error: %s", exc, exc_info=True)
 
         interval = cfg.get("interval_minutes", 30)
-        _run_state["next_run_ts"] = (
-            datetime.now(timezone.utc) + timedelta(minutes=interval)
-        ).isoformat().replace("+00:00", "Z")
-        log.info("── Cycle complete. Next run at %s ──", _run_state["next_run_ts"])
+        if is_paused():
+            _run_state["next_run_ts"] = None
+            log.info("── Cycle stopped (paused) ──")
+        else:
+            _run_state["next_run_ts"] = (
+                datetime.now(timezone.utc) + timedelta(minutes=interval)
+            ).isoformat().replace("+00:00", "Z")
+            log.info("── Cycle complete. Next run at %s ──", _run_state["next_run_ts"])
     finally:
         _run_state["running"] = False
         _run_lock.release()
@@ -683,7 +724,7 @@ def start_scheduler(interval: int):
     most once — re-calling this (e.g. on every settings save) only swaps the
     scheduled job instead of leaking a new daemon thread each time."""
     global _scheduler_thread
-    _run_state["next_run_ts"] = (
+    _run_state["next_run_ts"] = None if is_paused() else (
         datetime.now(timezone.utc) + timedelta(minutes=interval)
     ).isoformat().replace("+00:00", "Z")
     schedule.clear()
@@ -900,9 +941,19 @@ def api_status():
     cfg = load_cfg()
     return jsonify({
         "running":          _run_state["running"],
+        "paused":           is_paused(),
         "next_run_ts":      _run_state["next_run_ts"],
         "interval_minutes": cfg.get("interval_minutes", 30),
     })
+
+@app.route("/api/pause", methods=["POST"])
+def api_set_pause():
+    """Pause or resume scraping. Body: {"paused": true|false}; omitting
+    the key toggles the current state."""
+    data = request.get_json(silent=True) or {}
+    paused = bool(data["paused"]) if "paused" in data else not is_paused()
+    set_paused(paused)
+    return jsonify({"paused": paused, "next_run_ts": _run_state["next_run_ts"]})
 
 @app.route("/api/config", methods=["GET"])
 def api_get_config():
@@ -978,6 +1029,8 @@ def api_debug_follow(board: str, thread_no: int):
 
 @app.route("/api/run", methods=["POST"])
 def api_run_now():
+    if is_paused():
+        return jsonify({"error": "Scraping is paused — resume first"}), 409
     if _run_state["running"]:
         return jsonify({"error": "A scrape cycle is already running"}), 409
     threading.Thread(target=run_all_threads, daemon=True).start()
@@ -1686,6 +1739,18 @@ header .spacer { flex: 1; }
   gap: .4rem;
   display: none;
 }
+.paused-indicator {
+  font-size: .8rem;
+  color: var(--warn, #d9a441);
+  display: none;
+  align-items: center;
+  gap: .4rem;
+  margin-right: .6rem;
+}
+#pause-btn.paused {
+  border-color: var(--warn, #d9a441);
+  color: var(--warn, #d9a441);
+}
 
 /* ── Buttons ── */
 .btn {
@@ -2099,6 +2164,8 @@ details[open] > summary::before { transform: rotate(90deg); }
   <div class="run-indicator" id="run-indicator">
     <span class="spinner"></span> Scraping…
   </div>
+  <div class="paused-indicator" id="paused-indicator">&#9208; Paused</div>
+  <button class="btn" id="pause-btn" onclick="togglePause()">&#9208; Pause</button>
   <button class="btn primary" id="run-btn" onclick="runAll()">&#9654; Run Now</button>
 </header>
 
@@ -2302,6 +2369,7 @@ baked</textarea>
 let threads               = [];
 let nextRunTs             = null;
 let isRunning             = false;
+let isPaused              = false;
 let archiveSortKey        = 'title';   // 'title' | 'board'
 let patterns              = [];
 let lastArchiveRender     = 0;
@@ -2375,10 +2443,42 @@ async function fetchStatus() {
     const r    = await fetch('/api/status');
     const data = await r.json();
     isRunning  = data.running;
+    isPaused   = !!data.paused;
     nextRunTs  = data.next_run_ts ? new Date(data.next_run_ts) : null;
     document.getElementById('run-indicator').style.display = isRunning ? 'flex' : 'none';
-    document.getElementById('run-btn').disabled = isRunning;
+    document.getElementById('run-btn').disabled = isRunning || isPaused;
+    renderPauseState();
   } catch (_) {}
+}
+
+function renderPauseState() {
+  const btn = document.getElementById('pause-btn');
+  btn.innerHTML = isPaused ? '&#9654; Resume' : '&#9208; Pause';
+  btn.title = isPaused
+    ? 'Resume scheduled scraping'
+    : 'Pause scheduled scraping (stops after the current thread)';
+  btn.classList.toggle('paused', isPaused);
+  document.getElementById('paused-indicator').style.display = isPaused ? 'flex' : 'none';
+  tickCountdown();
+}
+
+async function togglePause() {
+  const btn = document.getElementById('pause-btn');
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/pause', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({paused: !isPaused}),
+    });
+    const data = await r.json();
+    if (!r.ok) { toast(data.error || 'Could not change pause state', 'error'); return; }
+    toast(data.paused
+      ? 'Scraping paused — a running cycle stops after the current thread'
+      : 'Scraping resumed', 'info');
+    await fetchStatus();
+  } catch (_) { toast('Network error', 'error'); }
+  finally { btn.disabled = false; }
 }
 
 async function loadConfig() {
@@ -2863,6 +2963,7 @@ function onDrop(e) {
 // ── Countdown ────────────────────────────────────────────────────────────────
 function tickCountdown() {
   const el = document.getElementById('next-run-display');
+  if (isPaused)  { el.textContent = 'paused'; return; }
   if (!nextRunTs) { el.textContent = '—'; return; }
   const sec = Math.max(0, Math.floor((nextRunTs - Date.now()) / 1000));
   if (sec === 0) { el.textContent = 'now'; return; }
@@ -2924,6 +3025,10 @@ def main():
 
     cfg = load_cfg()
     log.setLevel(getattr(logging, cfg.get("log_level", "INFO").upper(), logging.INFO))
+
+    if cfg.get("paused"):
+        _pause_event.set()
+        log.info("Scraping is paused (restored from config)")
 
     if not args.no_scheduler:
         interval = int(cfg.get("interval_minutes", 30))
