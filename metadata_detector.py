@@ -236,6 +236,18 @@ def read_jpeg_exif(filepath: Path) -> Optional[str]:
         return None
 
 
+def _format_novelai(chunks: dict, filepath: Path) -> Optional[str]:
+    """Format NovelAI metadata: the Source version, then the pretty-printed Comment JSON."""
+    try:
+        comment = chunks['Comment']
+        comment_data = json.loads(comment) if isinstance(comment, str) else comment
+        source = chunks.get('Source', 'Unknown')
+        return f"Version: {source}\n\n{json.dumps(comment_data, indent=2)}"
+    except Exception as exc:
+        log.debug("NovelAI Comment parse failed in %s: %s", filepath, exc)
+        return None
+
+
 def extract_metadata(filepath: Path) -> Optional[str]:
     """
     Extract SD metadata from an image file.
@@ -254,12 +266,9 @@ def extract_metadata(filepath: Path) -> Optional[str]:
 
             # NovelAI format
             if 'Comment' in chunks and 'Description' in chunks and 'Software' in chunks:
-                try:
-                    comment_data = json.loads(chunks['Comment'])
-                    source = chunks.get('Source', 'Unknown')
-                    return f"Version: {source}\n\n{json.dumps(comment_data, indent=2)}"
-                except Exception as exc:
-                    log.debug("NovelAI Comment parse failed in %s: %s", filepath, exc)
+                formatted = _format_novelai(chunks, filepath)
+                if formatted:
+                    return formatted
 
             # A1111 format
             if 'parameters' in chunks:
@@ -287,6 +296,18 @@ def extract_metadata(filepath: Path) -> Optional[str]:
         # Check for stealth metadata (works on all image types)
         stealth_data = read_stealth_metadata(filepath)
         if stealth_data:
+            # NovelAI's stealth payload is its PNG chunks (Description, Software, Comment...)
+            # wrapped in one JSON object; format it the same as the chunk version.
+            if stealth_data.lstrip().startswith('{'):
+                try:
+                    wrapper = json.loads(stealth_data)
+                except ValueError:
+                    wrapper = None
+                if (isinstance(wrapper, dict) and 'Comment' in wrapper
+                        and 'NovelAI' in str(wrapper.get('Software', ''))):
+                    formatted = _format_novelai(wrapper, filepath)
+                    if formatted:
+                        return formatted
             return stealth_data
 
     except Exception as exc:
