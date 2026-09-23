@@ -1527,6 +1527,9 @@ main{{max-width:860px;margin:0 auto;padding:1.4rem 1.2rem}}
 .sheet-tile:hover{{border-color:var(--accent);transform:translateY(-2px)}}
 .sheet-tile img,.sheet-tile video{{width:100%;height:100%;object-fit:cover;
                                      display:block;background:#000}}
+/* Nothing inside a tile is independently clickable — the whole tile opens
+   the lightbox, so badges must not swallow or divert the click. */
+.sheet-tile *{{pointer-events:none}}
 .sheet-cap{{position:absolute;bottom:0;left:0;right:0;font-size:.65rem;
              font-family:'Courier New',monospace;color:#ccc;
              background:rgba(0,0,0,.65);padding:.12rem .3rem;text-align:left}}
@@ -1615,6 +1618,8 @@ document.querySelectorAll('.post-img img').forEach(img => {{
 
 // Metadata viewer
 document.querySelectorAll('.metadata-badge').forEach(badge => {{
+  // Contact-sheet tiles handle their own clicks (open the lightbox)
+  if (badge.closest('.sheet-tile')) return;
   badge.addEventListener('click', async (e) => {{
     e.preventDefault();
     e.stopPropagation();
@@ -1823,9 +1828,19 @@ function closeLightbox() {{
   lbIndex = -1;
 }}
 
-document.querySelectorAll('.sheet-tile').forEach(tile => {{
-  tile.addEventListener('click', () => openLightbox(parseInt(tile.dataset.idx, 10)));
-}});
+// Bound in the capture phase on the grid so a tile click always opens the
+// lightbox — it runs before any handler on the badges inside a tile (e.g.
+// the SD metadata viewer) and stops the event there.
+const sheetGrid = document.querySelector('.sheet-grid');
+if (sheetGrid) {{
+  sheetGrid.addEventListener('click', e => {{
+    const tile = e.target.closest('.sheet-tile');
+    if (!tile) return;
+    e.preventDefault();
+    e.stopPropagation();
+    openLightbox(parseInt(tile.dataset.idx, 10));
+  }}, true);
+}}
 
 document.addEventListener('keydown', e => {{
   if (lbIndex < 0) return;
