@@ -1158,8 +1158,8 @@ def archive_view(board: str, thread_no: int):
                         img_html = (
                             f'<div class="post-img">'
                             f'{metadata_badge}'
-                            f'<video controls preload="metadata" '
-                            f'src="{src_url}">'
+                            f'<video controls preload="none" class="lazy-vid" '
+                            f'data-src="{src_url}">'
                             f'<a href="{src_url}" target="_blank">{html_lib.escape(orig)}</a>'
                             f'</video></div>'
                         )
@@ -1205,7 +1205,7 @@ def archive_view(board: str, thread_no: int):
                             f'<div class="post-img ext-file">'
                             f'{meta_badge}'
                             f'<div class="ext-label">{html_lib.escape(display_name)}</div>'
-                            f'<video controls preload="metadata" src="{src_url}">'
+                            f'<video controls preload="none" class="lazy-vid" data-src="{src_url}">'
                             f'<a href="{src_url}" target="_blank">{html_lib.escape(display_name)}</a>'
                             f'</video></div>'
                         )
@@ -1264,8 +1264,8 @@ def archive_view(board: str, thread_no: int):
                 ext_tag = ('<span class="sheet-ext">EXT</span>'
                            if m["source"] == "external" else "")
                 if m["video"]:
-                    inner = (f'<video muted preload="metadata" '
-                             f'src="{m["src"]}#t=0.1"></video>'
+                    inner = (f'<video muted preload="none" class="lazy-vid" '
+                             f'data-src="{m["src"]}#t=0.1"></video>'
                              f'<span class="sheet-play">&#9654;</span>')
                 else:
                     inner = (f'<img src="{m["src"]}" loading="lazy" '
@@ -1850,6 +1850,49 @@ document.addEventListener('keydown', e => {{
   else if (e.key === 'Home')       {{ e.preventDefault(); openLightbox(0); }}
   else if (e.key === 'End')        {{ e.preventDefault(); openLightbox(MEDIA.length - 1); }}
 }});
+
+// Videos carry data-src instead of src so a video-heavy thread doesn't fire
+// hundreds of simultaneous requests on load. As they near view they join a
+// queue that loads at most MAX_VID_LOADS at a time (browsers allow ~6
+// connections per host), so a screenful of sheet tiles is staggered too.
+(function () {{
+  const MAX_VID_LOADS = 3;
+  const queue = [];
+  let active = 0;
+  const pump = () => {{
+    while (active < MAX_VID_LOADS && queue.length) {{
+      const v = queue.shift();
+      if (!v.dataset.src) continue;
+      active++;
+      let done = false;
+      const finish = () => {{
+        if (done) return;
+        done = true;
+        active--;
+        pump();
+      }};
+      v.addEventListener('loadedmetadata', finish, {{ once: true }});
+      v.addEventListener('error', finish, {{ once: true }});
+      setTimeout(finish, 15000);  // don't let one stalled file block the queue
+      v.src = v.dataset.src;
+      v.removeAttribute('data-src');
+      v.preload = 'metadata';
+    }}
+  }};
+  const vids = document.querySelectorAll('video.lazy-vid[data-src]');
+  if (!('IntersectionObserver' in window)) {{
+    vids.forEach(v => queue.push(v));
+    pump();
+    return;
+  }}
+  const io = new IntersectionObserver(entries => {{
+    entries.forEach(en => {{
+      if (en.isIntersecting) {{ io.unobserve(en.target); queue.push(en.target); }}
+    }});
+    pump();
+  }}, {{ rootMargin: '400px 0px' }});
+  vids.forEach(v => io.observe(v));
+}})();
 
 if (location.hash === '#sheet') setView('sheet');
 </script>
