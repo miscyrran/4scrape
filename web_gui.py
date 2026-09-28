@@ -1408,7 +1408,7 @@ main{{max-width:860px;margin:0 auto;padding:1.4rem 1.2rem}}
   margin-right:.3rem;
   cursor:pointer;
 }}
-.post.filtered-hidden{{
+.post.filtered-hidden,.sheet-tile.filtered-hidden{{
   display:none;
 }}
 #metadata-modal{{
@@ -1734,6 +1734,24 @@ function applyPostFilters() {{
     const hide = (metaActive && !hasMetadata) || (extActive && !hasExtFiles);
     post.classList.toggle('filtered-hidden', hide);
   }});
+  // Contact-sheet tiles: same filters, applied per file
+  let shown = 0;
+  document.querySelectorAll('.sheet-tile').forEach(tile => {{
+    const m = MEDIA[+tile.dataset.idx];
+    const hide = (metaActive && !m.meta_url) || (extActive && m.source !== 'external');
+    tile.classList.toggle('filtered-hidden', hide);
+    if (!hide) shown++;
+  }});
+  const count = document.querySelector('.sheet-count');
+  if (count) count.textContent = (shown === MEDIA.length)
+    ? MEDIA.length + ' file(s)'
+    : shown + ' of ' + MEDIA.length + ' file(s)';
+}}
+
+// Indices of media items not hidden by the filters (for lightbox stepping)
+function visibleMedia() {{
+  return Array.from(document.querySelectorAll('.sheet-tile:not(.filtered-hidden)'))
+    .map(t => +t.dataset.idx);
 }}
 const filterCheckbox = document.getElementById('filter-metadata');
 if (filterCheckbox) filterCheckbox.addEventListener('change', applyPostFilters);
@@ -1752,9 +1770,6 @@ function setView(view) {{
   sheet.hidden = !onSheet;
   document.getElementById('btn-view-posts').classList.toggle('active', !onSheet);
   document.getElementById('btn-view-sheet').classList.toggle('active', onSheet);
-  // The post filters only apply to the posts list
-  const fc = document.getElementById('filter-controls');
-  if (fc) fc.style.display = onSheet ? 'none' : '';
   history.replaceState(null, '', onSheet ? '#sheet' : location.pathname);
 }}
 
@@ -1808,7 +1823,7 @@ function openLightbox(i) {{
   sdBtn.hidden = !m.meta_url;
 
   lb.querySelector('.lb-bar').innerHTML =
-    escapeHtml(m.name) + ' &nbsp;·&nbsp; ' + (lbIndex + 1) + ' / ' + MEDIA.length +
+    escapeHtml(m.name) + ' &nbsp;·&nbsp; ' + lbPosition() +
     ' <a href="#p' + m.post_no + '" data-jump="1">jump to post #' + m.post_no + '</a>';
   lb.querySelector('.lb-bar a').addEventListener('click', () => {{
     closeLightbox();
@@ -1816,9 +1831,19 @@ function openLightbox(i) {{
   }});
 }}
 
+function lbPosition() {{
+  const vis = visibleMedia();
+  const pos = vis.indexOf(lbIndex);
+  return pos < 0 ? (lbIndex + 1) + ' / ' + MEDIA.length : (pos + 1) + ' / ' + vis.length;
+}}
+
 function stepLightbox(delta) {{
-  if (lbIndex < 0 || !MEDIA.length) return;
-  openLightbox((lbIndex + delta + MEDIA.length) % MEDIA.length);
+  const vis = visibleMedia();
+  if (lbIndex < 0 || !vis.length) return;
+  const pos = vis.indexOf(lbIndex);
+  const next = pos < 0 ? (delta > 0 ? 0 : vis.length - 1)
+                       : (pos + delta + vis.length) % vis.length;
+  openLightbox(vis[next]);
 }}
 
 function closeLightbox() {{
@@ -3243,7 +3268,7 @@ function onDrop(e) {
            || e.dataTransfer.getData('text/plain')
            || '';
 
-  const firstUrl = raw.split(/\s+/).find(l => l.trim() && !l.startsWith('#'));
+  const firstUrl = raw.split(/\\s+/).find(l => l.trim() && !l.startsWith('#'));
   if (firstUrl) {
     document.getElementById('url-input').value = firstUrl.trim();
     clearErr();
@@ -3266,7 +3291,7 @@ function tickCountdown() {
 
 // ── Utilities ────────────────────────────────────────────────────────────────
 function is4chanUrl(s) {
-  return /4chan(nel)?\.org\/[a-zA-Z0-9]+\/thread\/\d+/.test(s);
+  return /4chan(nel)?\\.org\\/[a-zA-Z0-9]+\\/thread\\/\\d+/.test(s);
 }
 function timeAgo(d) {
   const sec = Math.floor((Date.now() - d) / 1000);
