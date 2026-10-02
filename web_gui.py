@@ -1320,6 +1320,7 @@ def archive_view(board: str, thread_no: int):
 <title>{html_lib.escape(title)} — 4scrape archive</title>
 <style>
 *,*::before,*::after{{box-sizing:border-box;margin:0;padding:0}}
+html{{scroll-padding-top:calc(var(--hdr-h,56px) + var(--info-h,0px) + 1.25rem)}}
 :root{{--bg:#0c0c0e;--surface:#131316;--surface2:#1a1a1f;--border:#2c2c34;
        --text:#d8d8e0;--muted:#6b6b7a;--accent:#c93535;--green:#22c55e;
        --blue:#60a5fa;--orange:#f59e0b}}
@@ -1603,13 +1604,27 @@ main{{max-width:860px;margin:0 auto;padding:1.4rem 1.2rem}}
   {body}
 </main>
 <script>
-// Keep the floating thread-info bar just below the sticky header
+// Keep the floating thread-info bar just below the sticky header, and make
+// #p anchor jumps land below both bars (via scroll-padding-top on <html>)
 const _hdr = document.querySelector('header');
+const _info = document.querySelector('.thread-info');
 function syncHdrHeight() {{
-  document.documentElement.style.setProperty('--hdr-h', _hdr.offsetHeight + 'px');
+  const root = document.documentElement.style;
+  root.setProperty('--hdr-h', _hdr.offsetHeight + 'px');
+  root.setProperty('--info-h', (_info ? _info.offsetHeight : 0) + 'px');
 }}
 syncHdrHeight();
 window.addEventListener('resize', syncHdrHeight);
+if (window.ResizeObserver) {{
+  const _ro = new ResizeObserver(syncHdrHeight);
+  _ro.observe(_hdr);
+  if (_info) _ro.observe(_info);
+}}
+// The browser's initial hash jump happens before the heights above are known
+if (/^#p\\d+$/.test(location.hash)) {{
+  const _t = document.getElementById(location.hash.slice(1));
+  if (_t) _t.scrollIntoView();
+}}
 
 // Image expansion
 document.querySelectorAll('.post-img img').forEach(img => {{
