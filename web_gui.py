@@ -1883,6 +1883,12 @@ if (sheetGrid) {{
 }}
 
 document.addEventListener('keydown', e => {{
+  // The SD metadata modal stacks on top of the lightbox, so Escape dismisses
+  // it first and leaves the image open.
+  if (e.key === 'Escape') {{
+    const meta = document.getElementById('metadata-modal');
+    if (meta) {{ e.preventDefault(); e.stopPropagation(); meta.remove(); return; }}
+  }}
   if (lbIndex < 0) return;
   if (e.key === 'ArrowRight')      {{ e.preventDefault(); stepLightbox(1); }}
   else if (e.key === 'ArrowLeft')  {{ e.preventDefault(); stepLightbox(-1); }}
