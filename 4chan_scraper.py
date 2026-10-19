@@ -210,6 +210,27 @@ def slugify(text: str, maxlen: int = 60) -> str:
     return text[:maxlen]
 
 
+def safe_name(name: str, max_bytes: int = 250) -> str:
+    """Sanitize a filename and clamp it to max_bytes, keeping the extension.
+
+    4chan allows filenames far longer than the 255-byte limit ext4 puts on a
+    single path component, and a long one used to make os.stat raise ENAMETOOLONG
+    and 500 the archive view. Non-ASCII names mean the clamp has to count bytes,
+    not characters. The default leaves room for the ".part" download suffix.
+    """
+    name = re.sub(r'[<>:"/\\|?*]', "_", name)
+    if len(name.encode("utf-8", "surrogatepass")) <= max_bytes:
+        return name
+    stem, dot, ext = name.rpartition(".")
+    if not dot or len(ext) > 12:
+        stem, ext = name, ""
+    else:
+        ext = dot + ext
+    budget = max_bytes - len(ext.encode("utf-8", "surrogatepass"))
+    stem = stem.encode("utf-8", "surrogatepass")[:max(budget, 1)]
+    return stem.decode("utf-8", "ignore") + ext
+
+
 def api_get(url: str, delay: float, retries: int = 3,
             if_modified_since: Optional[str] = None) -> tuple:
     """GET a 4chan API URL, respecting rate limits and retrying on 429/5xx.
@@ -392,12 +413,10 @@ def scrape_thread(board: str, thread_no: int, cfg: dict,
                 orig = html.unescape(post.get("filename", str(tim)))
                 # Prefix with the unique tim id — original filenames collide
                 # constantly and a collision silently drops the second image
-                dest_name = f"{tim}_{orig}{ext}"
-                # Sanitise filename
-                dest_name = re.sub(r'[<>:"/\\|?*]', "_", dest_name)
+                dest_name = safe_name(f"{tim}_{orig}{ext}")
                 dest = img_dir / dest_name
                 # Files saved before the tim prefix existed count as present
-                legacy = img_dir / re.sub(r'[<>:"/\\|?*]', "_", f"{orig}{ext}")
+                legacy = img_dir / safe_name(f"{orig}{ext}")
                 if legacy.exists():
                     continue
                 img_url = f"{IMG_BASE}/{board}/{tim}{ext}"
@@ -441,9 +460,7 @@ def scrape_thread(board: str, thread_no: int, cfg: dict,
                         filename = f"download{idx}"
 
                     # Prepend post number and index
-                    dest_name = f"{post_no}_{idx}_{filename}"
-                    # Sanitize filename
-                    dest_name = re.sub(r'[<>:"/\\|?*]', "_", dest_name)
+                    dest_name = safe_name(f"{post_no}_{idx}_{filename}")
                     dest_path = img_dir / dest_name
 
                     img_get(url, dest_path, cfg["request_delay"])

@@ -293,6 +293,35 @@ def _slugify(text: str, maxlen: int = 60) -> str:
     text = re.sub(r"[\s_-]+", "_", text).strip("_")
     return text[:maxlen]
 
+def _safe_name(name: str, max_bytes: int = 250) -> str:
+    """Sanitize a filename and clamp it to max_bytes, keeping the extension.
+
+    4chan allows filenames far longer than the 255-byte limit ext4 puts on a
+    single path component, and a long one used to make os.stat raise ENAMETOOLONG
+    and 500 the archive view. Non-ASCII names mean the clamp has to count bytes,
+    not characters. The default leaves room for the ".part" download suffix.
+    """
+    name = re.sub(r'[<>:"/\\|?*]', "_", name)
+    if len(name.encode("utf-8", "surrogatepass")) <= max_bytes:
+        return name
+    stem, dot, ext = name.rpartition(".")
+    if not dot or len(ext) > 12:
+        stem, ext = name, ""
+    else:
+        ext = dot + ext
+    budget = max_bytes - len(ext.encode("utf-8", "surrogatepass"))
+    stem = stem.encode("utf-8", "surrogatepass")[:max(budget, 1)]
+    return stem.decode("utf-8", "ignore") + ext
+
+
+def _exists(path) -> bool:
+    """Path.exists() that survives a path the filesystem cannot even stat."""
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
 def _format_post(post: dict) -> str:
     ts   = datetime.fromtimestamp(post.get("time", 0), timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     no   = post.get("no", "?")
@@ -417,9 +446,7 @@ def scrape_thread_entry(t: dict, cfg: dict) -> tuple:
                             filename = f"download{idx}"
 
                         # Prepend post number and index
-                        dest_name = f"{post_no}_{idx}_{filename}"
-                        # Sanitize filename
-                        dest_name = re.sub(r'[<>:"/\\|?*]', "_", dest_name)
+                        dest_name = _safe_name(f"{post_no}_{idx}_{filename}")
                         dest = img_dir / dest_name
 
                         if not dest.exists():
@@ -456,12 +483,11 @@ def scrape_thread_entry(t: dict, cfg: dict) -> tuple:
                 # collide constantly (image.png, 1.jpg) and a collision
                 # silently drops the second image
                 raw_name = html_lib.unescape(str(p.get("filename") or p["tim"]))
-                fname = re.sub(r'[<>:"/\\|?*]',
-                               "_", f"{p['tim']}_{raw_name}{p['ext']}")
+                fname = _safe_name(f"{p['tim']}_{raw_name}{p['ext']}")
                 dest = img_dir / fname
                 # Files saved before the tim prefix existed count as present
                 legacy_names = [
-                    re.sub(r'[<>:"/\\|?*]', "_", n) for n in
+                    _safe_name(n) for n in
                     (f"{raw_name}{p['ext']}",
                      f"{p.get('filename', str(p['tim']))}{p['ext']}")
                 ]
@@ -1120,17 +1146,17 @@ def archive_view(board: str, thread_no: int):
                     # Legacy: filename with raw HTML entities
                     f"{p.get('filename', str(p['tim']))}{p['ext']}",
                 ]
-                orig = re.sub(r'[<>:"/\\|?*]', "_", candidates[0])
+                orig = _safe_name(candidates[0])
                 img_path = thread_dir / "images" / orig
                 for cand in candidates[1:]:
-                    if img_path.exists():
+                    if _exists(img_path):
                         break
-                    cand = re.sub(r'[<>:"/\\|?*]', "_", cand)
-                    if (thread_dir / "images" / cand).exists():
+                    cand = _safe_name(cand)
+                    if _exists(thread_dir / "images" / cand):
                         orig = cand
                         img_path = thread_dir / "images" / cand
                 ext_lower = (p.get("ext") or "").lower()
-                if img_path.exists():
+                if _exists(img_path):
                     src_url = f"/archive-img/{board}/{thread_no}/{url_quote(orig)}"
 
                     # Check for metadata
@@ -1963,7 +1989,7 @@ def archive_img(board: str, thread_no: int, filename: str):
     # Sanitise the filename — no path traversal
     safe = Path(filename).name
     img  = matches[0] / "images" / safe
-    if not img.exists() or not img.is_file():
+    if not _exists(img) or not img.is_file():
         return "Not found", 404
     mime = mimetypes.guess_type(safe)[0] or "application/octet-stream"
     # conditional=True enables Range requests — required for video seeking
@@ -1986,7 +2012,7 @@ def archive_metadata(board: str, thread_no: int, filename: str):
     # Sanitise the filename
     safe = Path(filename).name
     img  = matches[0] / "images" / safe
-    if not img.exists() or not img.is_file():
+    if not _exists(img) or not img.is_file():
         return jsonify({"error": "Image not found"}), 404
 
     # Extract metadata
