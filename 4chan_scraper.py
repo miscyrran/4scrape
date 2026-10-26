@@ -64,7 +64,8 @@ DEFAULT_CONFIG = {
     "save_external_files": False,
 
     # Domains to scan for external file links
-    "external_domains": ["catbox.moe", "files.catbox.moe", "litter.catbox.moe"],
+    "external_domains": ["catbox.moe", "files.catbox.moe", "litter.catbox.moe",
+                         "pxdrop.online"],
 
     # Max external files to download per thread (0 = unlimited)
     "max_external_files_per_thread": 100,
@@ -266,11 +267,16 @@ def api_get(url: str, delay: float, retries: int = 3,
     return "error", None, None
 
 
-def img_get(url: str, dest: Path, delay: float) -> bool:
+def img_get(url: str, dest: Path, delay: float, sniff_ext: bool = False) -> bool:
     """Download an image to dest, skipping if already present.
 
     Streams into a .part file and renames on success, so a dropped
     connection mid-stream never leaves a truncated file at dest.
+
+    With sniff_ext the URL carried no extension (a file-host id, not a
+    filename), so one is taken from the response Content-Type and appended
+    to dest before the rename — the archive view picks images and videos out
+    by extension and shows an extensionless file as neither.
     """
     if dest.exists():
         log.debug("Image already saved: %s", dest.name)
@@ -279,6 +285,9 @@ def img_get(url: str, dest: Path, delay: float) -> bool:
     try:
         resp = requests.get(url, headers=HEADERS, timeout=60, stream=True)
         if resp.status_code == 200:
+            if sniff_ext:
+                ctype = (resp.headers.get("Content-Type") or "").split(";")[0]
+                dest = dest.with_name(dest.name + MIME_EXT.get(ctype.strip().lower(), ""))
             dest.parent.mkdir(parents=True, exist_ok=True)
             with open(part, "wb") as f:
                 for chunk in resp.iter_content(chunk_size=65536):
@@ -293,6 +302,80 @@ def img_get(url: str, dest: Path, delay: float) -> bool:
         log.warning("Image download error (%s): %s", exc, url)
         part.unlink(missing_ok=True)
     return False
+
+
+# pxdrop links point at a viewer page, /i/<id>, and serve the file itself at
+# /raw/<id>. Neither form carries a filename or an extension.
+PXDROP_RE = re.compile(r"^https?://(?:www\.)?pxdrop\.online/(?:i|raw)/([A-Za-z0-9]+)",
+                       re.IGNORECASE)
+
+# Content-Type is the only clue to an extension when the URL has none.
+MIME_EXT = {
+    "image/jpeg": ".jpg",
+    "image/jpg":  ".jpg",
+    "image/png":  ".png",
+    "image/gif":  ".gif",
+    "image/webp": ".webp",
+    "image/avif": ".avif",
+    "video/mp4":  ".mp4",
+    "video/webm": ".webm",
+}
+
+
+def pxdrop_filename(page_url: str, delay: float) -> Optional[str]:
+    """Scrape the original filename off a pxdrop viewer page.
+
+    The page titles itself "<original name> — pxdrop", in og:title and in
+    <title>; that is the only place the uploaded name survives.
+    """
+    try:
+        resp = requests.get(page_url, headers=HEADERS, timeout=20)
+    except requests.RequestException as exc:
+        log.warning("pxdrop page error (%s): %s", exc, page_url)
+        return None
+    time.sleep(delay)
+    if resp.status_code != 200:
+        log.warning("pxdrop page HTTP %d: %s", resp.status_code, page_url)
+        return None
+    match = (re.search(r'<meta property="og:title" content="([^"]*)"', resp.text)
+             or re.search(r"<title>(.*?)</title>", resp.text, re.DOTALL))
+    if not match:
+        return None
+    # Strip the " — pxdrop" the page appends to the filename
+    name = re.sub(r"\s*—\s*pxdrop\s*$", "",
+                  html.unescape(match.group(1))).strip()
+    return name or None
+
+
+def download_external(url: str, img_dir: Path, prefix: str, delay: float) -> bool:
+    """Download one external link into img_dir, named "<prefix><name>".
+
+    Direct links (catbox and friends) keep the filename out of the URL.
+    A pxdrop link has none to keep: the file is fetched from /raw/<id> and
+    saved as "<prefix><id>_<original name>", with the id in the name so a
+    later pass can see the file is already there without fetching the viewer
+    page again.
+    """
+    match = PXDROP_RE.match(url)
+    if not match:
+        name = url.split("/")[-1].split("?")[0] or "download"
+        return img_get(url, img_dir / safe_name(prefix + name), delay)
+
+    file_id = match.group(1)
+    base = safe_name(prefix + file_id)
+    for existing in img_dir.iterdir():
+        if (existing.is_file() and existing.name.startswith(base)
+                and not existing.name.endswith(".part")):
+            log.debug("External file already saved: %s", existing.name)
+            return False
+
+    orig = pxdrop_filename(url, delay) if "/raw/" not in url else None
+    name = f"{file_id}_{orig}" if orig else file_id
+    stem, dot, ext = name.rpartition(".")
+    has_ext = bool(dot) and 1 <= len(ext) <= 5 and ext.isalnum()
+    return img_get(f"https://pxdrop.online/raw/{file_id}",
+                   img_dir / safe_name(prefix + name), delay,
+                   sniff_ext=not has_ext)
 
 
 # ---------------------------------------------------------------------------
@@ -454,16 +537,10 @@ def scrape_thread(board: str, thread_no: int, cfg: dict,
                 img_dir.mkdir(parents=True, exist_ok=True)
 
                 for idx, (url, post_no) in enumerate(external_links, start=1):
-                    # Extract filename from URL
-                    filename = url.split("/")[-1].split("?")[0]
-                    if not filename:
-                        filename = f"download{idx}"
-
-                    # Prepend post number and index
-                    dest_name = safe_name(f"{post_no}_{idx}_{filename}")
-                    dest_path = img_dir / dest_name
-
-                    img_get(url, dest_path, cfg["request_delay"])
+                    # Post number and index prefix the saved name; the archive
+                    # view reads the post number back out of it
+                    download_external(url, img_dir, f"{post_no}_{idx}_",
+                                      cfg["request_delay"])
 
     # Update state
     if new_posts:

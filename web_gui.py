@@ -77,7 +77,8 @@ DEFAULT_CONFIG = {
     "request_delay":         1.0,
     "log_level":             "INFO",
     "save_external_files":   False,
-    "external_domains":      ["catbox.moe", "files.catbox.moe"],
+    "external_domains":      ["catbox.moe", "files.catbox.moe",
+                             "pxdrop.online"],
     "max_external_files_per_thread": 100,
     "follow_new_threads":    True,
     "follow_near_bump_limit": True,
@@ -322,6 +323,115 @@ def _exists(path) -> bool:
         return False
 
 
+# pxdrop links point at a viewer page, /i/<id>, and serve the file itself at
+# /raw/<id>. Neither form carries a filename or an extension.
+_PXDROP_RE = re.compile(r"^https?://(?:www\.)?pxdrop\.online/(?:i|raw)/([A-Za-z0-9]+)",
+                        re.IGNORECASE)
+
+# Content-Type is the only clue to an extension when the URL has none.
+_MIME_EXT = {
+    "image/jpeg": ".jpg",
+    "image/jpg":  ".jpg",
+    "image/png":  ".png",
+    "image/gif":  ".gif",
+    "image/webp": ".webp",
+    "image/avif": ".avif",
+    "video/mp4":  ".mp4",
+    "video/webm": ".webm",
+}
+
+
+def _pxdrop_filename(page_url: str, delay: float) -> Optional[str]:
+    """Scrape the original filename off a pxdrop viewer page.
+
+    The page titles itself "<original name> — pxdrop", in og:title and in
+    <title>; that is the only place the uploaded name survives.
+    """
+    try:
+        resp = requests.get(page_url, headers=HTTP_HEADERS, timeout=20)
+    except Exception as exc:
+        log.warning("pxdrop page error (%s): %s", exc, page_url)
+        return None
+    time.sleep(delay)
+    if resp.status_code != 200:
+        log.warning("pxdrop page HTTP %d: %s", resp.status_code, page_url)
+        return None
+    match = (re.search(r'<meta property="og:title" content="([^"]*)"', resp.text)
+             or re.search(r"<title>(.*?)</title>", resp.text, re.DOTALL))
+    if not match:
+        return None
+    # Strip the " — pxdrop" the page appends to the filename
+    name = re.sub(r"\s*—\s*pxdrop\s*$", "",
+                  html_lib.unescape(match.group(1))).strip()
+    return name or None
+
+
+def _fetch_to(url: str, dest: Path, delay: float, sniff_ext: bool = False) -> bool:
+    """Stream a URL into dest, renaming from a .part file on success so a
+    dropped connection never leaves a truncated file behind.
+
+    With sniff_ext the URL carried no extension (a file-host id, not a
+    filename), so one is taken from the response Content-Type — the archive
+    view picks images and videos out by extension and shows an extensionless
+    file as neither.
+    """
+    part = dest.with_suffix(dest.suffix + ".part")
+    try:
+        resp = requests.get(url, headers=HTTP_HEADERS, timeout=60, stream=True)
+        if resp.status_code != 200:
+            log.warning("External file HTTP %d: %s", resp.status_code, url)
+            return False
+        if sniff_ext:
+            ctype = (resp.headers.get("Content-Type") or "").split(";")[0]
+            dest = dest.with_name(dest.name + _MIME_EXT.get(ctype.strip().lower(), ""))
+        with open(part, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=65536):
+                f.write(chunk)
+        os.replace(part, dest)
+        log.debug("Downloaded external file: %s", dest.name)
+        return True
+    except Exception as exc:
+        log.warning("External file DL error for %s: %s", url, exc)
+        part.unlink(missing_ok=True)
+        return False
+    finally:
+        time.sleep(delay)
+
+
+def _download_external(url: str, img_dir: Path, prefix: str, delay: float) -> bool:
+    """Download one external link into img_dir, named "<prefix><name>".
+
+    Direct links (catbox and friends) keep the filename out of the URL.
+    A pxdrop link has none to keep: the file is fetched from /raw/<id> and
+    saved as "<prefix><id>_<original name>", with the id in the name so a
+    later pass can see the file is already there without fetching the viewer
+    page again.
+    """
+    match = _PXDROP_RE.match(url)
+    if not match:
+        name = url.split("/")[-1].split("?")[0] or "download"
+        dest = img_dir / _safe_name(prefix + name)
+        if _exists(dest):
+            return False
+        return _fetch_to(url, dest, delay)
+
+    file_id = match.group(1)
+    base = _safe_name(prefix + file_id)
+    for existing in img_dir.iterdir():
+        if (existing.is_file() and existing.name.startswith(base)
+                and not existing.name.endswith(".part")):
+            log.debug("External file already saved: %s", existing.name)
+            return False
+
+    orig = _pxdrop_filename(url, delay) if "/raw/" not in url else None
+    name = f"{file_id}_{orig}" if orig else file_id
+    _stem, dot, ext = name.rpartition(".")
+    has_ext = bool(dot) and 1 <= len(ext) <= 5 and ext.isalnum()
+    return _fetch_to(f"https://pxdrop.online/raw/{file_id}",
+                     img_dir / _safe_name(prefix + name), delay,
+                     sniff_ext=not has_ext)
+
+
 def _format_post(post: dict) -> str:
     ts   = datetime.fromtimestamp(post.get("time", 0), timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     no   = post.get("no", "?")
@@ -440,29 +550,10 @@ def scrape_thread_entry(t: dict, cfg: dict) -> tuple:
                     img_dir.mkdir(exist_ok=True)
 
                     for idx, (url, post_no) in enumerate(external_links, start=1):
-                        # Extract filename from URL
-                        filename = url.split("/")[-1].split("?")[0]
-                        if not filename:
-                            filename = f"download{idx}"
-
-                        # Prepend post number and index
-                        dest_name = _safe_name(f"{post_no}_{idx}_{filename}")
-                        dest = img_dir / dest_name
-
-                        if not dest.exists():
-                            part = dest.with_suffix(dest.suffix + ".part")
-                            try:
-                                resp = requests.get(url, headers=HTTP_HEADERS, timeout=60, stream=True)
-                                if resp.status_code == 200:
-                                    with open(part, "wb") as f:
-                                        for chunk in resp.iter_content(chunk_size=65536):
-                                            f.write(chunk)
-                                    os.replace(part, dest)
-                                    log.debug("Downloaded external file: %s", dest_name)
-                            except Exception as exc:
-                                log.warning("External file DL error for %s: %s", url, exc)
-                                part.unlink(missing_ok=True)
-                            time.sleep(delay)
+                        # Post number and index prefix the saved name; the
+                        # archive view reads the post number back out of it
+                        _download_external(url, img_dir,
+                                           f"{post_no}_{idx}_", delay)
 
         t["last_seen_post"] = posts[-1]["no"]
 
@@ -2633,11 +2724,11 @@ details[open] > summary::before { transform: rotate(90deg); }
         </div>
         <div class="setting checkbox-row">
           <input type="checkbox" id="cfg-external">
-          <label for="cfg-external">Download external files (catbox, litterbox)</label>
+          <label for="cfg-external">Download external files (catbox, litterbox, pxdrop)</label>
         </div>
         <div class="setting">
           <label>External domains (comma-separated)</label>
-          <input type="text" id="cfg-external-domains" value="catbox.moe, files.catbox.moe">
+          <input type="text" id="cfg-external-domains" value="catbox.moe, files.catbox.moe, pxdrop.online">
         </div>
         <div class="setting">
           <label>Max external files / thread</label>
@@ -2855,7 +2946,7 @@ async function loadConfig() {
     document.getElementById('cfg-images').checked  = cfg.save_images !== false;
     document.getElementById('cfg-json').checked    = cfg.save_raw_json !== false;
     document.getElementById('cfg-external').checked = !!(cfg.save_external_files);
-    const extDomains = Array.isArray(cfg.external_domains) ? cfg.external_domains : ['catbox.moe', 'files.catbox.moe'];
+    const extDomains = Array.isArray(cfg.external_domains) ? cfg.external_domains : ['catbox.moe', 'files.catbox.moe', 'pxdrop.online'];
     document.getElementById('cfg-external-domains').value = extDomains.join(', ');
     document.getElementById('cfg-max-external').value = cfg.max_external_files_per_thread ?? 100;
     document.getElementById('cfg-follow-enabled').checked = cfg.follow_new_threads !== false;
