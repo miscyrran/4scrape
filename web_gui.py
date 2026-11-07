@@ -35,6 +35,8 @@ from flask import Flask, jsonify, request
 
 # Local imports
 import metadata_detector
+import transcode
+import video_codec
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 
@@ -1159,6 +1161,77 @@ def _valid_board(board: str) -> bool:
     return bool(re.fullmatch(r"[a-z0-9]{1,10}", board))
 
 
+def _video_render_info(img_path, board: str, thread_no: int, fname: str) -> dict:
+    """Everything the archive view needs to know about one video file.
+
+    ``playable`` is the sniffed verdict (see video_codec); when it is False
+    the page renders a fallback card instead of a <video> that would die
+    silently with "no video with supported format and MIME type found".
+    ``play_url`` is the already-transcoded copy when one exists, so a file
+    converted earlier just plays normally on the next page load.
+    """
+    quoted  = url_quote(fname)
+    src_url = f"/archive-img/{board}/{thread_no}/{quoted}"
+    info = {
+        "src":       src_url,
+        "api":       f"/api/transcode/{board}/{thread_no}/{quoted}",
+        "play_url":  src_url,
+        "codec":     None,
+        "playable":  True,
+        "converted": False,
+        "can_convert": transcode.available(),
+    }
+    probe = video_codec.probe(img_path)
+    info["codec"]    = probe.get("codec")
+    info["playable"] = probe.get("playable", True)
+    if not info["playable"] and transcode.cached(img_path):
+        info["play_url"]  = f"/archive-playable/{board}/{thread_no}/{quoted}"
+        info["converted"] = True
+    return info
+
+
+def _video_html(info: dict, display_name: str, badge: str = "",
+                wrap_class: str = "post-img", label_html: str = "") -> str:
+    """A <video> element, or the fallback card for an undecodable codec."""
+    name_attr = html_lib.escape(display_name)
+    common = (f'data-src="{info["src"]}" data-api="{info["api"]}" '
+              f'data-name="{name_attr}" '
+              f'data-codec="{html_lib.escape(info["codec"] or "")}" '
+              f'data-can-convert="{"1" if info["can_convert"] else ""}"')
+
+    if info["playable"] or info["converted"]:
+        note = ('<div class="vid-note">converted to H.264 for playback</div>'
+                if info["converted"] else "")
+        # preload="none" + data-lazy-src: the loader swaps it in on scroll.
+        return (f'<div class="{wrap_class}">{badge}{label_html}'
+                f'<video controls preload="none" class="lazy-vid" {common} '
+                f'data-lazy-src="{info["play_url"]}">'
+                f'<a href="{info["play_url"]}" target="_blank">{name_attr}</a>'
+                f'</video>{note}</div>')
+
+    codec = html_lib.escape(info["codec"] or "this codec")
+    if info["can_convert"]:
+        action = ('<button type="button" class="vu-btn" data-act="convert">'
+                  'Convert for browser</button>')
+    else:
+        action = ('<span class="vu-nope">no ffmpeg in this build &mdash; '
+                  'play it locally</span>')
+    return (
+        f'<div class="{wrap_class}">{badge}{label_html}'
+        f'<div class="vid-unsup" {common}>'
+        f'<div class="vu-head"><span class="vu-codec">{codec}</span>'
+        f' cannot be decoded by browsers</div>'
+        f'<div class="vu-name">{name_attr}</div>'
+        f'<div class="vu-actions">{action}'
+        f'<a class="vu-dl" href="{info["src"]}" download>Download</a>'
+        f'<a class="vu-dl" href="{info["src"]}" target="_blank" '
+        f'rel="noopener">Open raw</a></div>'
+        f'<div class="vu-prog" hidden><div class="vu-track">'
+        f'<div class="vu-bar"></div></div><span class="vu-pct"></span></div>'
+        f'</div></div>'
+    )
+
+
 @app.route("/archive/<board>/<int:thread_no>")
 def archive_view(board: str, thread_no: int):
     """Render the locally-archived version of a thread."""
@@ -1261,25 +1334,27 @@ def archive_view(board: str, thread_no: int):
                             f'title="SD metadata detected - click to view">SD</span>'
                         )
 
+                    is_video = ext_lower in (".webm", ".mp4")
+                    vinfo = (_video_render_info(img_path, board, thread_no, orig)
+                             if is_video else None)
+
                     media_items.append({
                         "src":      src_url,
                         "name":     orig,
                         "post_no":  no,
-                        "video":    ext_lower in (".webm", ".mp4"),
+                        "video":    is_video,
                         "meta_url": (f"/archive-metadata/{board}/{thread_no}/{url_quote(orig)}"
                                      if has_metadata else None),
                         "source":   "post",
+                        "codec":    vinfo["codec"] if vinfo else None,
+                        "playable": (vinfo["playable"] or vinfo["converted"]) if vinfo else True,
+                        "play_url": vinfo["play_url"] if vinfo else src_url,
+                        "api":      vinfo["api"] if vinfo else None,
+                        "can_convert": vinfo["can_convert"] if vinfo else False,
                     })
 
-                    if ext_lower in (".webm", ".mp4"):
-                        img_html = (
-                            f'<div class="post-img">'
-                            f'{metadata_badge}'
-                            f'<video controls preload="none" class="lazy-vid" '
-                            f'data-src="{src_url}">'
-                            f'<a href="{src_url}" target="_blank">{html_lib.escape(orig)}</a>'
-                            f'</video></div>'
-                        )
+                    if is_video:
+                        img_html = _video_html(vinfo, orig, metadata_badge)
                     else:
                         img_html = (
                             f'<div class="post-img">'
@@ -1305,27 +1380,36 @@ def archive_view(board: str, thread_no: int):
                             f'data-metadata-url="{meta_url}" '
                             f'title="SD metadata detected - click to view">SD</span>'
                         )
+                    is_video = ext_lower in (".webm", ".mp4")
+                    vinfo = (_video_render_info(
+                                 thread_dir / "images" / fname,
+                                 board, thread_no, fname)
+                             if is_video else None)
+
                     if ext_lower in (".webm", ".mp4", ".jpg", ".jpeg", ".png",
                                      ".gif", ".webp"):
                         media_items.append({
                             "src":      src_url,
                             "name":     display_name,
                             "post_no":  no,
-                            "video":    ext_lower in (".webm", ".mp4"),
+                            "video":    is_video,
                             "meta_url": (f"/archive-metadata/{board}/{thread_no}/{url_quote(fname)}"
                                          if has_meta else None),
                             "source":   "external",
+                            "codec":    vinfo["codec"] if vinfo else None,
+                            "playable": (vinfo["playable"] or vinfo["converted"]) if vinfo else True,
+                            "play_url": vinfo["play_url"] if vinfo else src_url,
+                            "api":      vinfo["api"] if vinfo else None,
+                            "can_convert": vinfo["can_convert"] if vinfo else False,
                         })
 
-                    if ext_lower in (".webm", ".mp4"):
-                        ext_parts.append(
-                            f'<div class="post-img ext-file">'
-                            f'{meta_badge}'
-                            f'<div class="ext-label">{html_lib.escape(display_name)}</div>'
-                            f'<video controls preload="none" class="lazy-vid" data-src="{src_url}">'
-                            f'<a href="{src_url}" target="_blank">{html_lib.escape(display_name)}</a>'
-                            f'</video></div>'
-                        )
+                    if is_video:
+                        ext_parts.append(_video_html(
+                            vinfo, display_name, meta_badge,
+                            wrap_class="post-img ext-file",
+                            label_html=('<div class="ext-label">'
+                                        f'{html_lib.escape(display_name)}</div>'),
+                        ))
                     elif ext_lower in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
                         ext_parts.append(
                             f'<div class="post-img ext-file">'
@@ -1380,9 +1464,15 @@ def archive_view(board: str, thread_no: int):
                 badge = ('<span class="sheet-sd">SD</span>' if m["meta_url"] else "")
                 ext_tag = ('<span class="sheet-ext">EXT</span>'
                            if m["source"] == "external" else "")
-                if m["video"]:
+                if m["video"] and not m["playable"]:
+                    # No point asking the browser for a poster frame it
+                    # cannot decode — show the codec on the tile instead.
+                    inner = (f'<span class="sheet-nodec">'
+                             f'{html_lib.escape(m["codec"] or "codec")}</span>'
+                             f'<span class="sheet-play">&#9654;</span>')
+                elif m["video"]:
                     inner = (f'<video muted preload="none" class="lazy-vid" '
-                             f'data-src="{m["src"]}#t=0.1"></video>'
+                             f'data-lazy-src="{m["play_url"]}#t=0.1"></video>'
                              f'<span class="sheet-play">&#9654;</span>')
                 else:
                     inner = (f'<img src="{m["src"]}" loading="lazy" '
@@ -1485,6 +1575,34 @@ main{{max-width:860px;margin:0 auto;padding:1.4rem 1.2rem}}
 .post-img video{{max-width:min(100%,560px);max-height:400px;
                   border-radius:5px;border:1px solid var(--border);
                   display:block;background:#000}}
+.vid-note{{font-size:.7rem;color:var(--muted);margin-top:.2rem}}
+
+/* ── Undecodable-codec fallback card ── */
+.vid-unsup{{max-width:min(100%,560px);border-radius:5px;
+             border:1px solid var(--border);background:var(--surface);
+             padding:.7rem .8rem;display:flex;flex-direction:column;gap:.35rem}}
+.vu-head{{font-size:.82rem;color:var(--text)}}
+.vu-codec{{font-weight:700;color:var(--orange)}}
+.vu-name{{font-size:.72rem;color:var(--muted);font-family:'Courier New',monospace;
+           word-break:break-all}}
+.vu-actions{{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;
+              margin-top:.15rem}}
+.vu-btn{{background:var(--blue);color:#000;border:0;border-radius:4px;
+          padding:.3rem .6rem;font-size:.76rem;font-weight:600;cursor:pointer;
+          font-family:inherit}}
+.vu-btn:hover:not(:disabled){{filter:brightness(1.12)}}
+.vu-btn:disabled{{opacity:.55;cursor:default}}
+.vu-dl{{color:var(--blue);text-decoration:none;font-size:.76rem}}
+.vu-dl:hover{{text-decoration:underline}}
+.vu-nope{{font-size:.76rem;color:var(--muted)}}
+.vu-prog{{display:flex;align-items:center;gap:.5rem;font-size:.72rem;
+           color:var(--muted)}}
+.vu-track{{flex:1;height:5px;background:var(--border);border-radius:3px;
+            overflow:hidden}}
+.vu-bar{{height:100%;width:0;background:var(--green);
+          transition:width .3s linear}}
+.vu-pct{{min-width:7.5rem;text-align:right;font-family:'Courier New',monospace}}
+.vu-err{{color:#ff6b6b}}
 .raw-txt{{white-space:pre-wrap;word-break:break-word;font-family:'Courier New',monospace;
            font-size:.8rem;background:var(--surface);border:1px solid var(--border);
            border-radius:8px;padding:1rem}}
@@ -1658,6 +1776,12 @@ main{{max-width:860px;margin:0 auto;padding:1.4rem 1.2rem}}
 .sheet-play{{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
               font-size:1.6rem;color:#fff;text-shadow:0 0 8px #000;
               pointer-events:none}}
+.sheet-nodec{{position:absolute;inset:0;display:flex;align-items:flex-end;
+                justify-content:center;padding-bottom:1.1rem;
+                background:repeating-linear-gradient(45deg,#1a1a1a,#1a1a1a 8px,
+                           #222 8px,#222 16px);
+                font-size:.62rem;font-weight:700;color:var(--orange);
+                letter-spacing:.04em}}
 
 /* ── Lightbox ── */
 #lightbox{{position:fixed;inset:0;background:rgba(0,0,0,.93);z-index:9998;
@@ -1667,6 +1791,7 @@ main{{max-width:860px;margin:0 auto;padding:1.4rem 1.2rem}}
             align-items:center;justify-content:center}}
 #lightbox img,#lightbox video{{max-width:100%;max-height:100%;
                                 object-fit:contain;display:block}}
+#lightbox .vid-unsup{{max-width:min(90vw,560px)}}
 .lb-bar{{position:absolute;bottom:.5rem;left:0;right:0;text-align:center;
           font-size:.75rem;color:var(--muted);
           font-family:'Courier New',monospace;padding:0 1rem;
@@ -1945,11 +2070,26 @@ function openLightbox(i) {{
   }}
   const holder = lb.querySelector('.lb-media');
   holder.innerHTML = '';
-  const el = document.createElement(m.video ? 'video' : 'img');
-  el.src = m.src;
-  if (m.video) {{ el.controls = true; el.autoplay = true; el.loop = true; }}
-  else {{ el.alt = m.name; }}
-  holder.appendChild(el);
+  if (m.video && !m.playable) {{
+    // Same fallback card as the posts view, so the file can be downloaded
+    // or converted without leaving the lightbox.
+    holder.appendChild(vuBuild({{
+      src: m.src, api: m.api, name: m.name, codec: m.codec,
+      canConvert: m.can_convert ? '1' : '',
+    }}, escapeHtml(m.codec || 'This codec') + ' cannot be decoded by browsers'));
+  }} else {{
+    const el = document.createElement(m.video ? 'video' : 'img');
+    el.src = m.video ? (m.play_url || m.src) : m.src;
+    if (m.video) {{
+      el.controls = true; el.autoplay = true; el.loop = true;
+      el.dataset.src = m.src;
+      if (m.api) el.dataset.api = m.api;
+      el.dataset.name = m.name;
+      el.dataset.codec = m.codec || '';
+      el.dataset.canConvert = m.can_convert ? '1' : '';
+    }} else {{ el.alt = m.name; }}
+    holder.appendChild(el);
+  }}
 
   const sdBtn = lb.querySelector('.lb-sd');
   sdBtn.hidden = !m.meta_url;
@@ -2014,7 +2154,7 @@ document.addEventListener('keydown', e => {{
   else if (e.key === 'End')        {{ e.preventDefault(); openLightbox(MEDIA.length - 1); }}
 }});
 
-// Videos carry data-src instead of src so a video-heavy thread doesn't fire
+// Videos carry data-lazy-src instead of src so a video-heavy thread doesn't fire
 // hundreds of simultaneous requests on load. As they near view they join a
 // queue that loads at most MAX_VID_LOADS at a time (browsers allow ~6
 // connections per host), so a screenful of sheet tiles is staggered too.
@@ -2025,7 +2165,7 @@ document.addEventListener('keydown', e => {{
   const pump = () => {{
     while (active < MAX_VID_LOADS && queue.length) {{
       const v = queue.shift();
-      if (!v.dataset.src) continue;
+      if (!v.dataset.lazySrc) continue;
       active++;
       let done = false;
       const finish = () => {{
@@ -2037,12 +2177,12 @@ document.addEventListener('keydown', e => {{
       v.addEventListener('loadedmetadata', finish, {{ once: true }});
       v.addEventListener('error', finish, {{ once: true }});
       setTimeout(finish, 15000);  // don't let one stalled file block the queue
-      v.src = v.dataset.src;
-      v.removeAttribute('data-src');
+      v.src = v.dataset.lazySrc;
+      v.removeAttribute('data-lazy-src');
       v.preload = 'metadata';
     }}
   }};
-  const vids = document.querySelectorAll('video.lazy-vid[data-src]');
+  const vids = document.querySelectorAll('video.lazy-vid[data-lazy-src]');
   if (!('IntersectionObserver' in window)) {{
     vids.forEach(v => queue.push(v));
     pump();
@@ -2057,6 +2197,140 @@ document.addEventListener('keydown', e => {{
   vids.forEach(v => io.observe(v));
 }})();
 
+
+// ── Undecodable video codecs ────────────────────────────────────────────────
+// Files in a codec no browser decodes (HEVC, mostly) are rendered server-side
+// as a .vid-unsup card instead of a <video> that would fail silently with
+// "no video with supported format and MIME type found". The card can kick off
+// an on-demand H.264 transcode; nothing is ever re-encoded unless clicked.
+
+function vuBuild(ds, headHtml) {{
+  const card = document.createElement('div');
+  card.className = 'vid-unsup';
+  card.dataset.src  = ds.src  || '';
+  card.dataset.api  = ds.api  || '';
+  card.dataset.name = ds.name || '';
+  card.dataset.codec = ds.codec || '';
+  card.dataset.canConvert = ds.canConvert || '';
+  const action = (ds.api && ds.canConvert)
+    ? '<button type="button" class="vu-btn" data-act="convert">Convert for browser</button>'
+    : '<span class="vu-nope">no ffmpeg in this build &mdash; play it locally</span>';
+  card.innerHTML =
+    '<div class="vu-head">' + headHtml + '</div>' +
+    '<div class="vu-name">' + escapeHtml(ds.name || '') + '</div>' +
+    '<div class="vu-actions">' + action +
+      '<a class="vu-dl" href="' + (ds.src || '#') + '" download>Download</a>' +
+      '<a class="vu-dl" href="' + (ds.src || '#') + '" target="_blank" rel="noopener">Open raw</a>' +
+    '</div>' +
+    '<div class="vu-prog" hidden><div class="vu-track"><div class="vu-bar"></div></div>' +
+      '<span class="vu-pct"></span></div>';
+  return card;
+}}
+
+// Keep MEDIA in step after a conversion so the contact sheet and the lightbox
+// start using the playable copy without a page reload.
+function vuSyncMedia(rawSrc, playUrl) {{
+  MEDIA.forEach(m => {{
+    if (m.video && m.src === rawSrc) {{ m.playable = true; m.play_url = playUrl; }}
+  }});
+}}
+
+function vuFail(card, msg) {{
+  const prog = card.querySelector('.vu-prog');
+  const btn  = card.querySelector('.vu-btn');
+  if (prog) prog.hidden = false;
+  const pct = card.querySelector('.vu-pct');
+  if (pct) {{ pct.className = 'vu-pct vu-err'; pct.textContent = msg; }}
+  const bar = card.querySelector('.vu-bar');
+  if (bar) bar.style.width = '0';
+  if (btn) {{ btn.disabled = false; btn.textContent = 'Retry conversion'; }}
+}}
+
+function vuDone(card, url) {{
+  const inLb = !!card.closest('#lightbox');
+  const v = document.createElement('video');
+  v.controls = true;
+  v.src = url;
+  if (inLb) {{ v.autoplay = true; v.loop = true; }}
+  const note = document.createElement('div');
+  note.className = 'vid-note';
+  note.textContent = 'converted to H.264 for playback';
+  vuSyncMedia(card.dataset.src, url);
+  card.replaceWith(v, note);
+}}
+
+async function vuConvert(card) {{
+  const api = card.dataset.api;
+  if (!api) return;
+  const btn  = card.querySelector('.vu-btn');
+  const prog = card.querySelector('.vu-prog');
+  const bar  = card.querySelector('.vu-bar');
+  const pct  = card.querySelector('.vu-pct');
+  if (btn) btn.disabled = true;
+  if (prog) prog.hidden = false;
+  if (pct) pct.className = 'vu-pct';
+  const show = (p, label) => {{
+    if (bar) bar.style.width = (p || 0) + '%';
+    if (pct) pct.textContent = label;
+  }};
+  show(0, 'starting...');
+
+  let st;
+  try {{
+    st = await (await fetch(api, {{ method: 'POST' }})).json();
+  }} catch (err) {{
+    return vuFail(card, 'could not reach the server');
+  }}
+  if (st.error) return vuFail(card, st.error);
+  if (st.state === 'done') return vuDone(card, st.src_url);
+  if (st.state === 'error' || st.state === 'unavailable') {{
+    return vuFail(card, st.msg || 'conversion unavailable');
+  }}
+
+  // Encoding a 1080p clip takes a while; poll gently and don't give up early.
+  let misses = 0;
+  const poll = async () => {{
+    let cur;
+    try {{
+      cur = await (await fetch(api)).json();
+    }} catch (err) {{
+      if (++misses > 20) return vuFail(card, 'lost contact with the server');
+      return setTimeout(poll, 3000);
+    }}
+    misses = 0;
+    if (cur.state === 'done')  return vuDone(card, cur.src_url);
+    if (cur.state === 'error') return vuFail(card, cur.msg || 'conversion failed');
+    if (cur.state === 'unavailable') return vuFail(card, cur.msg || 'conversion unavailable');
+    if (cur.state === 'idle')  return vuFail(card, 'the job stopped unexpectedly');
+    show(cur.pct, cur.state === 'queued' ? 'queued...'
+                                         : (cur.pct || 0) + '% encoding');
+    setTimeout(poll, 1500);
+  }};
+  setTimeout(poll, 800);
+}}
+
+document.addEventListener('click', e => {{
+  const btn = e.target.closest && e.target.closest('.vu-btn[data-act="convert"]');
+  if (!btn) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const card = btn.closest('.vid-unsup');
+  if (card) vuConvert(card);
+}}, true);
+
+// Safety net for codecs the server-side sniffer does not recognize: if a
+// <video> fails to load at all, swap it for the same card so the user gets a
+// download link and a convert button instead of a dead player.
+document.addEventListener('error', e => {{
+  const v = e.target;
+  if (!v || v.tagName !== 'VIDEO' || !v.dataset || !v.dataset.api) return;
+  if (v.dataset.vuSwapped) return;
+  v.dataset.vuSwapped = '1';
+  const card = vuBuild(v.dataset,
+    'This file could not be played &mdash; its codec is probably unsupported');
+  v.replaceWith(card);
+}}, true);
+
 if (location.hash === '#sheet') setView('sheet');
 </script>
 </body>
@@ -2064,47 +2338,91 @@ if (location.hash === '#sheet') setView('sheet');
     return page, 200, {"Content-Type": "text/html; charset=utf-8"}
 
 
+def _resolve_media(board: str, thread_no: int, filename: str):
+    """Map a URL triple onto a file inside the archive, or None.
+
+    Shared by the image, metadata and transcode routes so the thread-dir
+    glob and the path-traversal guard only exist once.
+    """
+    if not _valid_board(board):
+        return None
+    cfg       = load_cfg()
+    archive   = Path(cfg.get("output_dir", "4chan_archive"))
+    board_dir = archive / board
+    matches   = list(board_dir.glob(f"{thread_no}_*")) if board_dir.exists() else []
+    if not matches:
+        return None
+    # Sanitise the filename — no path traversal
+    safe = Path(filename).name
+    img  = matches[0] / "images" / safe
+    if not _exists(img) or not img.is_file():
+        return None
+    return img
+
+
 @app.route("/archive-img/<board>/<int:thread_no>/<path:filename>")
 def archive_img(board: str, thread_no: int, filename: str):
     """Serve a locally-archived image file."""
     import mimetypes
     from flask import send_file
-    if not _valid_board(board):
+    img = _resolve_media(board, thread_no, filename)
+    if img is None:
         return "Not found", 404
-    cfg       = load_cfg()
-    archive   = Path(cfg.get("output_dir", "4chan_archive"))
-    board_dir = archive / board
-    matches   = list(board_dir.glob(f"{thread_no}_*")) if board_dir.exists() else []
-    if not matches:
-        return "Not found", 404
-    # Sanitise the filename — no path traversal
-    safe = Path(filename).name
-    img  = matches[0] / "images" / safe
-    if not _exists(img) or not img.is_file():
-        return "Not found", 404
-    mime = mimetypes.guess_type(safe)[0] or "application/octet-stream"
+    mime = mimetypes.guess_type(img.name)[0] or "application/octet-stream"
     # conditional=True enables Range requests — required for video seeking
     # and for Safari/iOS to play .webm/.mp4 at all
     return send_file(img, mimetype=mime, conditional=True)
 
 
+@app.route("/archive-playable/<board>/<int:thread_no>/<path:filename>")
+def archive_playable(board: str, thread_no: int, filename: str):
+    """Serve the H.264 copy of a file whose own codec no browser decodes.
+
+    404 until the transcode has actually been run — the UI only points a
+    <video> here once /api/transcode reports the job done.
+    """
+    from flask import send_file
+    img = _resolve_media(board, thread_no, filename)
+    if img is None:
+        return "Not found", 404
+    out = transcode.cached(img)
+    if out is None:
+        return "Not transcoded", 404
+    return send_file(out, mimetype="video/mp4", conditional=True)
+
+
+@app.route("/api/transcode/<board>/<int:thread_no>/<path:filename>",
+           methods=["GET", "POST"])
+def api_transcode(board: str, thread_no: int, filename: str):
+    """GET reports transcode state for a file; POST queues the work.
+
+    States: idle, queued, running (with pct), done, error, unavailable.
+    """
+    img = _resolve_media(board, thread_no, filename)
+    if img is None:
+        return jsonify({"error": "Not found"}), 404
+    if not video_codec.is_video(img.name):
+        return jsonify({"error": "Not a video"}), 400
+
+    if request.method == "POST":
+        st = transcode.start(img)
+    else:
+        st = transcode.status(img)
+        if st["state"] == "idle" and not transcode.available():
+            st = {"state": "unavailable", "pct": 0,
+                  "msg": "this build has no ffmpeg"}
+
+    st["src_url"] = f"/archive-playable/{board}/{thread_no}/{url_quote(img.name)}"
+    return jsonify(st)
+
+
 @app.route("/archive-metadata/<board>/<int:thread_no>/<path:filename>")
 def archive_metadata(board: str, thread_no: int, filename: str):
     """Extract and return SD metadata from an archived image."""
-    if not _valid_board(board):
-        return jsonify({"error": "Thread not found"}), 404
-    cfg       = load_cfg()
-    archive   = Path(cfg.get("output_dir", "4chan_archive"))
-    board_dir = archive / board
-    matches   = list(board_dir.glob(f"{thread_no}_*")) if board_dir.exists() else []
-    if not matches:
-        return jsonify({"error": "Thread not found"}), 404
-
-    # Sanitise the filename
-    safe = Path(filename).name
-    img  = matches[0] / "images" / safe
-    if not _exists(img) or not img.is_file():
+    img = _resolve_media(board, thread_no, filename)
+    if img is None:
         return jsonify({"error": "Image not found"}), 404
+    safe = img.name
 
     # Extract metadata
     metadata = metadata_detector.extract_metadata(img)

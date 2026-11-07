@@ -19,13 +19,21 @@
 
 FROM python:3.11-slim
 
+# ── System deps ───────────────────────────────────────────────────────────────
+# ffmpeg powers the on-demand transcode of videos in codecs browsers cannot
+# decode (H.265/HEVC in particular — see video_codec.py). Nothing is ever
+# re-encoded automatically; the archive view only converts a file when the
+# user clicks the button on its fallback card. Without ffmpeg the app still
+# runs and simply offers a download link instead.
+RUN apt-get update  && apt-get install -y --no-install-recommends ffmpeg  && rm -rf /var/lib/apt/lists/*
+
 # ── Python deps ───────────────────────────────────────────────────────────────
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # ── App source ────────────────────────────────────────────────────────────────
-COPY 4chan_scraper.py web_gui.py metadata_detector.py ./
+COPY 4chan_scraper.py web_gui.py metadata_detector.py      video_codec.py transcode.py ./
 
 # ── Data volume ───────────────────────────────────────────────────────────────
 # Everything the app writes (archives, config, thread list) lives here.
